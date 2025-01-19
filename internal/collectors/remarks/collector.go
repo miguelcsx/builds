@@ -10,11 +10,11 @@ import (
 	"builds/internal/parsers/remarks"
 )
 
-// Collector implements LLVM remarks collection
+// Collector implements compiler remarks collection
 type Collector struct {
 	models.BaseCollector
 	buildContext *models.BuildContext
-	llvmRemarks  []models.LLVMRemark
+	remarks      []models.CompilerRemark
 	stderr       io.Writer
 }
 
@@ -30,7 +30,7 @@ func (c *Collector) Initialize(ctx context.Context) error {
 	return nil
 }
 
-// Collect gathers LLVM remarks from stdout
+// Collect gathers compiler remarks from stdout
 func (c *Collector) Collect(ctx context.Context) error {
 	// Create command with all optimization remarks enabled
 	args := append([]string{
@@ -64,13 +64,13 @@ func (c *Collector) Collect(ctx context.Context) error {
 		return fmt.Errorf("compilation failed: %w", err)
 	}
 
-	c.llvmRemarks = remarks
+	c.remarks = remarks
 	return nil
 }
 
 // GetData returns the collected remarks
 func (c *Collector) GetData() interface{} {
-	return c.llvmRemarks
+	return c.remarks
 }
 
 // Cleanup performs any necessary cleanup
@@ -79,9 +79,9 @@ func (c *Collector) Cleanup(ctx context.Context) error {
 }
 
 // FilterRemarksByPass filters remarks by pass name
-func (c *Collector) FilterRemarksByPass(pass string) []models.LLVMRemark {
-	var filtered []models.LLVMRemark
-	for _, remark := range c.llvmRemarks {
+func (c *Collector) FilterRemarksByPass(pass string) []models.CompilerRemark {
+	var filtered []models.CompilerRemark
+	for _, remark := range c.remarks {
 		if remark.Pass == pass {
 			filtered = append(filtered, remark)
 		}
@@ -90,9 +90,9 @@ func (c *Collector) FilterRemarksByPass(pass string) []models.LLVMRemark {
 }
 
 // FilterRemarksByType filters remarks by type
-func (c *Collector) FilterRemarksByType(remarkType string) []models.LLVMRemark {
-	var filtered []models.LLVMRemark
-	for _, remark := range c.llvmRemarks {
+func (c *Collector) FilterRemarksByType(remarkType string) []models.CompilerRemark {
+	var filtered []models.CompilerRemark
+	for _, remark := range c.remarks {
 		if remark.Type == remarkType {
 			filtered = append(filtered, remark)
 		}
@@ -103,15 +103,40 @@ func (c *Collector) FilterRemarksByType(remarkType string) []models.LLVMRemark {
 // GetOptimizationSummary returns a summary of optimization remarks
 func (c *Collector) GetOptimizationSummary() map[string]int {
 	summary := make(map[string]int)
-	for _, remark := range c.llvmRemarks {
+	for _, remark := range c.remarks {
 		switch remark.Type {
-		case "!Passed":
+		case "Passed":
 			summary["passed"]++
-		case "!Missed":
+		case "Missed":
 			summary["missed"]++
-		case "!Analysis":
+		case "Analysis":
 			summary["analysis"]++
 		}
 	}
 	return summary
+}
+
+// GetOptimizationsByFunction returns optimization remarks grouped by function
+func (c *Collector) GetOptimizationsByFunction() map[string][]models.CompilerRemark {
+	byFunction := make(map[string][]models.CompilerRemark)
+	for _, remark := range c.remarks {
+		if remark.Function != "" {
+			byFunction[remark.Function] = append(byFunction[remark.Function], remark)
+		}
+	}
+	return byFunction
+}
+
+// GetRemarksWithReason returns remarks that have a specific reason
+func (c *Collector) GetRemarksWithReason(reason string) []models.CompilerRemark {
+	var filtered []models.CompilerRemark
+	for _, remark := range c.remarks {
+		for _, arg := range remark.Args {
+			if arg.Reason == reason {
+				filtered = append(filtered, remark)
+				break
+			}
+		}
+	}
+	return filtered
 }

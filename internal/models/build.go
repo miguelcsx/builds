@@ -1,136 +1,177 @@
 package models
 
-import (
-	"time"
-)
+import "time"
 
 // Build represents a complete build process and its information
 type Build struct {
-	ID        string    `json:"id"`        // Unique build identifier
-	StartTime time.Time `json:"startTime"` // Build start time
-	EndTime   time.Time `json:"endTime"`   // Build end time
-	Duration  float64   `json:"duration"`  // Build duration in seconds
-	Success   bool      `json:"success"`   // Build success status
-	Error     string    `json:"error"`     // Error message if build failed
+	ID        string    `json:"id"`
+	StartTime time.Time `json:"startTime"`
+	EndTime   time.Time `json:"endTime"`
+	Duration  float64   `json:"duration"`
+	Success   bool      `json:"success"`
+	Error     string    `json:"error,omitempty"`
 
-	// Build environment
-	Environment EnvironmentInfo `json:"environment"` // Build environment information
-	Hardware    HardwareInfo    `json:"hardware"`    // Hardware information
-	Compiler    CompilerInfo    `json:"compiler"`    // Compiler information
+	// Build environment and configuration
+	Environment Environment `json:"environment"`
+	Hardware    Hardware    `json:"hardware"`
+	Compiler    Compiler    `json:"compiler"`
 
-	// Build data
-	Source  SourceInfo  `json:"source"`  // Source code information
-	Command CommandInfo `json:"command"` // Build command information
-	Output  OutputInfo  `json:"output"`  // Build output information
+	// Build execution and output
+	Command Command      `json:"command"`
+	Output  Output       `json:"output"`
+	Metrics BuildMetrics `json:"metrics"`
 
 	// Analysis data
-	KernelInfo    []KernelRemark  `json:"kernelInfo"`    // Kernel information
-	LLVMRemarks   []LLVMRemark    `json:"llvmRemarks"`   // LLVM optimization remarks
-	ResourceUsage ResourceUsage   `json:"resourceUsage"` // Resource usage statistics
-	Performance   PerformanceInfo `json:"performance"`   // Performance analysis
+	Remarks       []CompilerRemark `json:"remarks"` // Generic compiler remarks
+	ResourceUsage ResourceUsage    `json:"resourceUsage"`
+	Performance   Performance      `json:"performance"`
 }
 
-// EnvironmentInfo contains information about the build environment
-type EnvironmentInfo struct {
-	OS           string            `json:"os"`           // Operating system
-	Architecture string            `json:"architecture"` // System architecture
-	Environment  map[string]string `json:"environment"`  // Environment variables
-	WorkingDir   string            `json:"workingDir"`   // Working directory
+// Environment represents the build environment
+type Environment struct {
+	OS         string            `json:"os"`
+	Arch       string            `json:"arch"`
+	Variables  map[string]string `json:"variables"`
+	WorkingDir string            `json:"workingDir"`
 }
 
-// HardwareInfo contains system hardware information
-type HardwareInfo struct {
-	CPU        CPUInfo    `json:"cpu"`        // CPU information
-	Memory     MemoryInfo `json:"memory"`     // Memory information
-	GPU        []GPUInfo  `json:"gpu"`        // GPU information
-	NumCores   int        `json:"numCores"`   // Number of CPU cores
-	NumThreads int        `json:"numThreads"` // Number of CPU threads
+// Hardware represents system hardware information
+type Hardware struct {
+	CPU    CPU    `json:"cpu"`
+	Memory Memory `json:"memory"`
+	GPUs   []GPU  `json:"gpus,omitempty"`
 }
 
-// CompilerInfo contains compiler-specific information
-type CompilerInfo struct {
-	Name          string          `json:"name"`          // Compiler name
-	Version       string          `json:"version"`       // Compiler version
-	Target        string          `json:"target"`        // Target triple
-	Options       []string        `json:"options"`       // Compiler options
-	Optimizations map[string]bool `json:"optimizations"` // Enabled optimizations
+type CPU struct {
+	Model     string  `json:"model"`
+	Frequency float64 `json:"frequency"`
+	Cores     int32   `json:"cores"`
+	Threads   int32   `json:"threads"`
+	Vendor    string  `json:"vendor"`
+	CacheSize int64   `json:"cacheSize"`
 }
 
-// SourceInfo contains information about the source code
-type SourceInfo struct {
-	MainFile     string   `json:"mainFile"`     // Main source file
-	Dependencies []string `json:"dependencies"` // Source dependencies
-	Hash         string   `json:"hash"`         // Source code hash
+type Memory struct {
+	Total     int64 `json:"total"`
+	Available int64 `json:"available"`
+	SwapTotal int64 `json:"swapTotal"`
+	SwapFree  int64 `json:"swapFree"`
+	Used      int64 `json:"used"`
 }
 
-// CommandInfo contains information about the build command
-type CommandInfo struct {
-	Executable  string   `json:"executable"`  // Compiler executable
-	Args        []string `json:"args"`        // Command arguments
-	FullCommand string   `json:"fullCommand"` // Full command string
+type GPU struct {
+	Model       string `json:"model"`
+	Memory      int64  `json:"memory"`
+	Driver      string `json:"driver"`
+	ComputeCaps string `json:"computeCaps"`
 }
 
-// OutputInfo contains build output information
-type OutputInfo struct {
-	Stdout    string     `json:"stdout"`    // Standard output
-	Stderr    string     `json:"stderr"`    // Standard error
-	Artifacts []Artifact `json:"artifacts"` // Build artifacts
-	ExitCode  int        `json:"exitCode"`  // Command exit code
+// Compiler represents the compiler configuration
+type Compiler struct {
+	Name          string            `json:"name"`
+	Version       string            `json:"version"`
+	Target        string            `json:"target"`
+	Options       []string          `json:"options"`
+	Optimizations map[string]bool   `json:"optimizations"`
+	Flags         map[string]string `json:"flags"`
+	Language      Language          `json:"language"`
+	Extensions    []string          `json:"extensions"`
+	Features      CompilerFeatures  `json:"features"`
 }
 
-// Artifact represents a build artifact
+type Language struct {
+	Name          string `json:"name"`
+	Version       string `json:"version"`
+	Specification string `json:"specification"`
+}
+
+type CompilerFeatures struct {
+	SupportsOpenMP bool     `json:"supportsOpenMP"`
+	SupportsGPU    bool     `json:"supportsGPU"`
+	SupportsLTO    bool     `json:"supportsLTO"`
+	SupportsPGO    bool     `json:"supportsPGO"`
+	Extensions     []string `json:"extensions"`
+}
+
+// Command represents the build command execution
+type Command struct {
+	Executable string            `json:"executable"`
+	Arguments  []string          `json:"arguments"`
+	WorkingDir string            `json:"workingDir"`
+	Env        map[string]string `json:"env"`
+}
+
+// Output represents build output information
+type Output struct {
+	Stdout    string     `json:"stdout"`
+	Stderr    string     `json:"stderr"`
+	Artifacts []Artifact `json:"artifacts"`
+	ExitCode  int32      `json:"exitCode"`
+	Warnings  []string   `json:"warnings"`
+	Errors    []string   `json:"errors"`
+}
+
 type Artifact struct {
-	Path string `json:"path"` // Artifact path
-	Type string `json:"type"` // Artifact type
-	Size int64  `json:"size"` // Artifact size
-	Hash string `json:"hash"` // Artifact hash
+	Path string `json:"path"`
+	Type string `json:"type"`
+	Size int64  `json:"size"`
+	Hash string `json:"hash"`
 }
 
-// ResourceUsage contains resource usage statistics
+// CompilerRemark represents a generic compiler remark/diagnostic
+type CompilerRemark struct {
+	Type     string      `json:"type"`
+	Pass     string      `json:"pass"`
+	Message  string      `json:"message"`
+	Location Location    `json:"location"`
+	Function string      `json:"function"`
+	Args     []RemarkArg `json:"args,omitempty"`
+}
+
+type Location struct {
+	File     string `json:"file"`
+	Line     int32  `json:"line"`
+	Column   int32  `json:"column"`
+	Function string `json:"function"`
+}
+
+type RemarkArg struct {
+	String   string    `json:"string,omitempty"`
+	Callee   string    `json:"callee,omitempty"`
+	Location *Location `json:"location,omitempty"`
+	Reason   string    `json:"reason,omitempty"`
+}
+
+// ResourceUsage represents resource utilization during the build
 type ResourceUsage struct {
-	MaxMemory   int64   `json:"maxMemory"`   // Peak memory usage
-	CPUTime     float64 `json:"cpuTime"`     // CPU time used
-	ThreadCount int     `json:"threadCount"` // Number of threads used
-	IOStats     IOStats `json:"ioStats"`     // I/O statistics
+	MaxMemory int64   `json:"maxMemory"`
+	CPUTime   float64 `json:"cpuTime"`
+	Threads   int32   `json:"threads"`
+	IO        IOStats `json:"io"`
 }
 
-// IOStats contains I/O statistics
 type IOStats struct {
-	ReadBytes    int64 `json:"readBytes"`    // Bytes read
-	WrittenBytes int64 `json:"writtenBytes"` // Bytes written
-	ReadCount    int64 `json:"readCount"`    // Number of read operations
-	WriteCount   int64 `json:"writeCount"`   // Number of write operations
+	ReadBytes  int64 `json:"readBytes"`
+	WriteBytes int64 `json:"writeBytes"`
+	ReadCount  int64 `json:"readCount"`
+	WriteCount int64 `json:"writeCount"`
 }
 
-// CPUInfo contains CPU information
-type CPUInfo struct {
-	Model     string  `json:"model"`     // CPU model
-	Frequency float64 `json:"frequency"` // CPU frequency in MHz
-	CacheSize int     `json:"cacheSize"` // CPU cache size
-	Vendor    string  `json:"vendor"`    // CPU vendor
+// Performance represents performance metrics
+type Performance struct {
+	CompileTime  float64            `json:"compileTime"`
+	LinkTime     float64            `json:"linkTime"`
+	OptimizeTime float64            `json:"optimizeTime"`
+	Phases       map[string]float64 `json:"phases"`
 }
 
-// MemoryInfo contains memory information
-type MemoryInfo struct {
-	Total     int64 `json:"total"`     // Total memory in bytes
-	Available int64 `json:"available"` // Available memory in bytes
-	SwapTotal int64 `json:"swapTotal"` // Total swap in bytes
-	SwapFree  int64 `json:"swapFree"`  // Free swap in bytes
-}
-
-// GPUInfo contains GPU information
-type GPUInfo struct {
-	Model       string `json:"model"`       // GPU model
-	Memory      int64  `json:"memory"`      // GPU memory in bytes
-	Driver      string `json:"driver"`      // GPU driver version
-	ComputeCaps string `json:"computeCaps"` // Compute capabilities
-}
-
-// PerformanceInfo contains performance analysis information
-type PerformanceInfo struct {
-	CompileTime   float64            `json:"compileTime"`   // Compilation time
-	LinkTime      float64            `json:"linkTime"`      // Linking time
-	OptimizeTime  float64            `json:"optimizeTime"`  // Optimization time
-	CacheMissRate float64            `json:"cacheMissRate"` // Cache miss rate
-	PhaseTimings  map[string]float64 `json:"phaseTimings"`  // Timing for each phase
+// BuildMetrics represents build statistics
+type BuildMetrics struct {
+	TotalFiles     int32              `json:"totalFiles"`
+	ProcessedFiles int32              `json:"processedFiles"`
+	Warnings       int32              `json:"warnings"`
+	Errors         int32              `json:"errors"`
+	InputSize      int64              `json:"inputSize"`
+	OutputSize     int64              `json:"outputSize"`
+	Metrics        map[string]float64 `json:"metrics"`
 }

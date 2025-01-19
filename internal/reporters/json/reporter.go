@@ -76,21 +76,70 @@ func (r *Reporter) generateSummary() interface{} {
 		Status      string    `json:"status"`
 		StartTime   time.Time `json:"startTime"`
 		Duration    float64   `json:"duration"`
-		Compiler    string    `json:"compiler"`
-		Source      string    `json:"source"`
-		Succeeded   bool      `json:"succeeded"`
-		Efficiency  float64   `json:"efficiency"`
-		Bottlenecks []string  `json:"bottlenecks"`
+		Environment struct {
+			OS         string `json:"os"`
+			Arch       string `json:"arch"`
+			WorkingDir string `json:"workingDir"`
+		} `json:"environment"`
+		Compiler struct {
+			Name     string   `json:"name"`
+			Version  string   `json:"version"`
+			Target   string   `json:"target"`
+			Language string   `json:"language"`
+			Features []string `json:"features"`
+		} `json:"compiler"`
+		Performance struct {
+			CompileTime float64  `json:"compileTime"`
+			LinkTime    float64  `json:"linkTime"`
+			Efficiency  float64  `json:"efficiency"`
+			Bottlenecks []string `json:"bottlenecks"`
+			MaxMemory   int64    `json:"maxMemory"`
+			CPUTime     float64  `json:"cpuTime"`
+		} `json:"performance"`
+		Success bool `json:"success"`
 	}{
-		ID:          r.build.ID,
-		Status:      r.getStatus(),
-		StartTime:   r.build.StartTime,
-		Duration:    r.build.Duration,
-		Compiler:    r.build.Compiler.Name,
-		Source:      r.build.Source.MainFile,
-		Succeeded:   r.build.Success,
-		Efficiency:  r.analysis.ResourceEfficiency,
-		Bottlenecks: r.getBottleneckDescriptions(),
+		ID:        r.build.ID,
+		Status:    r.getStatus(),
+		StartTime: r.build.StartTime,
+		Duration:  r.build.Duration,
+		Environment: struct {
+			OS         string `json:"os"`
+			Arch       string `json:"arch"`
+			WorkingDir string `json:"workingDir"`
+		}{
+			OS:         r.build.Environment.OS,
+			Arch:       r.build.Environment.Arch,
+			WorkingDir: r.build.Environment.WorkingDir,
+		},
+		Compiler: struct {
+			Name     string   `json:"name"`
+			Version  string   `json:"version"`
+			Target   string   `json:"target"`
+			Language string   `json:"language"`
+			Features []string `json:"features"`
+		}{
+			Name:     r.build.Compiler.Name,
+			Version:  r.build.Compiler.Version,
+			Target:   r.build.Compiler.Target,
+			Language: r.build.Compiler.Language.Name,
+			Features: r.build.Compiler.Features.Extensions,
+		},
+		Performance: struct {
+			CompileTime float64  `json:"compileTime"`
+			LinkTime    float64  `json:"linkTime"`
+			Efficiency  float64  `json:"efficiency"`
+			Bottlenecks []string `json:"bottlenecks"`
+			MaxMemory   int64    `json:"maxMemory"`
+			CPUTime     float64  `json:"cpuTime"`
+		}{
+			CompileTime: r.build.Performance.CompileTime,
+			LinkTime:    r.build.Performance.LinkTime,
+			Efficiency:  r.analysis.ResourceEfficiency,
+			Bottlenecks: r.getBottleneckDescriptions(),
+			MaxMemory:   r.build.ResourceUsage.MaxMemory,
+			CPUTime:     r.build.ResourceUsage.CPUTime,
+		},
+		Success: r.build.Success,
 	}
 }
 

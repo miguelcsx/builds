@@ -29,8 +29,8 @@ func NewParser(reader io.Reader) *Parser {
 	}
 }
 
-func (p *Parser) Parse() ([]models.LLVMRemark, error) {
-	var remarks []models.LLVMRemark
+func (p *Parser) Parse() ([]models.CompilerRemark, error) {
+	var remarks []models.CompilerRemark
 	scanner := bufio.NewScanner(p.reader)
 
 	for scanner.Scan() {
@@ -49,18 +49,19 @@ func (p *Parser) Parse() ([]models.LLVMRemark, error) {
 	return remarks, scanner.Err()
 }
 
-func (p *Parser) parseLine(line string) (models.LLVMRemark, error) {
-	var remark models.LLVMRemark
+func (p *Parser) parseLine(line string) (models.CompilerRemark, error) {
+	var remark models.CompilerRemark
 	matches := remarkRegex.FindStringSubmatch(line)
 	if len(matches) < 6 {
 		return remark, fmt.Errorf("invalid remark format")
 	}
 
 	// Basic remark info
-	remark.DebugLoc = models.Location{
-		File:   matches[1],
-		Line:   parseInt(matches[2]),
-		Column: parseInt(matches[3]),
+	remark.Location = models.Location{
+		File:     matches[1],
+		Line:     int32(parseInt(matches[2])),
+		Column:   int32(parseInt(matches[3])),
+		Function: "",
 	}
 
 	message := matches[4]
@@ -68,59 +69,60 @@ func (p *Parser) parseLine(line string) (models.LLVMRemark, error) {
 	remark.Pass = strings.TrimPrefix(pass, "Rpass")
 	remark.Pass = strings.TrimPrefix(remark.Pass, "Rpass-missed")
 	remark.Pass = strings.TrimPrefix(remark.Pass, "Rpass-analysis")
+	remark.Message = message
 
 	// Parse different remark types
 	if strings.Contains(pass, "inline") {
-		remark.Type = "!Passed"
+		remark.Type = "Passed"
 		remark.Args = p.parseInlineRemark(message)
 	} else if strings.Contains(pass, "missed") {
-		remark.Type = "!Missed"
+		remark.Type = "Missed"
 		remark.Args = p.parseMissedRemark(message)
 	} else {
-		remark.Type = "!Analysis"
+		remark.Type = "Analysis"
 		remark.Args = p.parseAnalysisRemark(message)
 	}
 
 	return remark, nil
 }
 
-func (p *Parser) parseInlineRemark(message string) []models.Args {
+func (p *Parser) parseInlineRemark(message string) []models.RemarkArg {
 	matches := passedRegex.FindStringSubmatch(message)
 	if len(matches) < 7 {
 		return nil
 	}
 
-	return []models.Args{
+	return []models.RemarkArg{
 		{Callee: matches[1]},
 		{String: matches[2]},
-		{Function: matches[3]},
+		{String: matches[3]},
 		{String: matches[4]},
 		{Reason: matches[5]},
-		{String: "at callsite " + matches[6]},
+		{String: matches[6]},
 	}
 }
 
-func (p *Parser) parseMissedRemark(message string) []models.Args {
+func (p *Parser) parseMissedRemark(message string) []models.RemarkArg {
 	matches := missedRegex.FindStringSubmatch(message)
 	if len(matches) < 3 {
 		return nil
 	}
 
-	return []models.Args{
+	return []models.RemarkArg{
 		{String: matches[1]},
-		{String: matches[2]},
+		{Reason: matches[2]},
 	}
 }
 
-func (p *Parser) parseAnalysisRemark(message string) []models.Args {
+func (p *Parser) parseAnalysisRemark(message string) []models.RemarkArg {
 	matches := analysisRegex.FindStringSubmatch(message)
 	if len(matches) < 3 {
 		return nil
 	}
 
-	return []models.Args{
+	return []models.RemarkArg{
 		{String: matches[1]},
-		{String: matches[2]},
+		{Reason: matches[2]},
 	}
 }
 

@@ -15,9 +15,9 @@ import (
 // Collector implements kernel info collection
 type Collector struct {
 	models.BaseCollector
-	buildContext  *models.BuildContext
-	kernelRemarks []models.KernelRemark
-	stderr        io.Writer
+	buildContext *models.BuildContext
+	remarks      []models.CompilerRemark
+	stderr       io.Writer
 }
 
 // NewCollector creates a new kernel collector
@@ -65,13 +65,13 @@ func (c *Collector) Collect(ctx context.Context) error {
 		return err
 	}
 
-	c.kernelRemarks = remarks
+	c.remarks = remarks
 	return nil
 }
 
 // GetData returns the collected kernel information
 func (c *Collector) GetData() interface{} {
-	return c.kernelRemarks
+	return c.remarks
 }
 
 // Cleanup performs any necessary cleanup
@@ -95,25 +95,30 @@ func (c *Collector) getKernelStatistics() map[string]interface{} {
 
 	// Count different types of remarks
 	remarkTypes := make(map[string]int)
-	for _, remark := range c.kernelRemarks {
+	for _, remark := range c.remarks {
 		remarkTypes[remark.Type]++
 	}
 	stats["remarkTypes"] = remarkTypes
 
 	// Count memory access patterns
 	memoryAccesses := make(map[string]int)
-	for _, remark := range c.kernelRemarks {
-		if remark.AccessType != "" {
-			memoryAccesses[remark.AccessType]++
+	for _, remark := range c.remarks {
+		// Look for memory access pattern in args
+		for _, arg := range remark.Args {
+			if arg.String != "" && strings.Contains(remark.Message, "memory") {
+				memoryAccesses[arg.String]++
+			}
 		}
 	}
 	stats["memoryAccesses"] = memoryAccesses
 
 	// Count function calls
 	functionCalls := make(map[string]int)
-	for _, remark := range c.kernelRemarks {
-		if remark.Callee != "" {
-			functionCalls[remark.Callee]++
+	for _, remark := range c.remarks {
+		for _, arg := range remark.Args {
+			if arg.Callee != "" {
+				functionCalls[arg.Callee]++
+			}
 		}
 	}
 	stats["functionCalls"] = functionCalls
@@ -122,9 +127,9 @@ func (c *Collector) getKernelStatistics() map[string]interface{} {
 }
 
 // FilterRemarksByType returns remarks of a specific type
-func (c *Collector) FilterRemarksByType(remarkType string) []models.KernelRemark {
-	var filtered []models.KernelRemark
-	for _, remark := range c.kernelRemarks {
+func (c *Collector) FilterRemarksByType(remarkType string) []models.CompilerRemark {
+	var filtered []models.CompilerRemark
+	for _, remark := range c.remarks {
 		if remark.Type == remarkType {
 			filtered = append(filtered, remark)
 		}
@@ -135,9 +140,9 @@ func (c *Collector) FilterRemarksByType(remarkType string) []models.KernelRemark
 // GetKernelNames returns the names of all kernels found
 func (c *Collector) GetKernelNames() []string {
 	kernelSet := make(map[string]struct{})
-	for _, remark := range c.kernelRemarks {
-		if remark.Location.Function != "" {
-			kernelSet[remark.Location.Function] = struct{}{}
+	for _, remark := range c.remarks {
+		if remark.Function != "" {
+			kernelSet[remark.Function] = struct{}{}
 		}
 	}
 
@@ -152,27 +157,42 @@ func (c *Collector) GetKernelNames() []string {
 func (c *Collector) GetKernelMetrics() map[string]map[string]int {
 	metrics := make(map[string]map[string]int)
 
-	for _, remark := range c.kernelRemarks {
-		if remark.Location.Function == "" {
+	for _, remark := range c.remarks {
+		if remark.Function == "" {
 			continue
 		}
 
-		if _, exists := metrics[remark.Location.Function]; !exists {
-			metrics[remark.Location.Function] = make(map[string]int)
+		if _, exists := metrics[remark.Function]; !exists {
+			metrics[remark.Function] = make(map[string]int)
 		}
 
 		switch remark.Type {
-		case "DirectCalls":
-			if val, err := strconv.Atoi(remark.Value); err == nil {
-				metrics[remark.Location.Function]["directCalls"] = val
+		case "function_call":
+			// Look for direct call count in args
+			for _, arg := range remark.Args {
+				if arg.String != "" {
+					if val, err := strconv.Atoi(arg.String); err == nil {
+						metrics[remark.Function]["directCalls"] = val
+					}
+				}
 			}
-		case "Allocas":
-			if val, err := strconv.Atoi(remark.Value); err == nil {
-				metrics[remark.Location.Function]["allocas"] = val
+		case "memory":
+			// Look for allocation information in args
+			for _, arg := range remark.Args {
+				if arg.String != "" && strings.Contains(remark.Message, "alloca") {
+					if val, err := strconv.Atoi(arg.String); err == nil {
+						metrics[remark.Function]["allocas"] = val
+					}
+				}
 			}
-		case "FlatAddrspaceAccesses":
-			if val, err := strconv.Atoi(remark.Value); err == nil {
-				metrics[remark.Location.Function]["flatAddrspaceAccesses"] = val
+		case "memory_access":
+			// Look for flat memory access information
+			for _, arg := range remark.Args {
+				if arg.String != "" && strings.Contains(arg.String, "flat") {
+					if val, err := strconv.Atoi(arg.String); err == nil {
+						metrics[remark.Function]["flatAddrspaceAccesses"] = val
+					}
+				}
 			}
 		}
 	}

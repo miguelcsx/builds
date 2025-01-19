@@ -52,7 +52,6 @@ func main() {
 		return
 	}
 
-	// Need at least one argument for the build command
 	if flag.NArg() < 1 {
 		flag.Usage()
 		os.Exit(1)
@@ -140,10 +139,10 @@ func executeBuild(buildCtx *models.BuildContext, args []string) (*models.Build, 
 	build := &models.Build{
 		ID:        buildCtx.BuildID,
 		StartTime: time.Now(),
-		Command: models.CommandInfo{
-			Executable:  buildCtx.Compiler,
-			Args:        buildCtx.Args,
-			FullCommand: strings.Join(args, " "),
+		Command: models.Command{
+			Executable: buildCtx.Compiler,
+			Arguments:  buildCtx.Args,
+			WorkingDir: buildCtx.OutputDir,
 		},
 	}
 
@@ -174,7 +173,7 @@ func executeBuild(buildCtx *models.BuildContext, args []string) (*models.Build, 
 		}
 	}
 
-	// Execute build
+	// Start build
 	if err := cmd.Start(); err != nil {
 		return build, fmt.Errorf("starting build: %w", err)
 	}
@@ -189,11 +188,16 @@ func executeBuild(buildCtx *models.BuildContext, args []string) (*models.Build, 
 	build.EndTime = time.Now()
 	build.Duration = build.EndTime.Sub(build.StartTime).Seconds()
 	build.Success = err == nil
+	if !build.Success {
+		build.Error = err.Error()
+	}
 
 	// Store the build output
-	build.Output = models.OutputInfo{
-		Stdout: stdoutBuf.String(),
-		Stderr: stderrBuf.String(),
+	build.Output = models.Output{
+		Stdout:    stdoutBuf.String(),
+		Stderr:    stderrBuf.String(),
+		ExitCode:  int32(cmd.ProcessState.ExitCode()),
+		Artifacts: []models.Artifact{}, // Will be populated by collectors
 	}
 
 	// Run collectors
@@ -213,7 +217,6 @@ func executeBuild(buildCtx *models.BuildContext, args []string) (*models.Build, 
 }
 
 func setupCollectors(factory *models.CollectorFactory, ctx *models.BuildContext) {
-	// Register all collectors with proper package references
 	factory.RegisterCollector("environment", environment.NewCollector())
 	factory.RegisterCollector("hardware", hardware.NewCollector())
 	factory.RegisterCollector("compiler", compiler.NewCollector(ctx))
@@ -223,16 +226,10 @@ func setupCollectors(factory *models.CollectorFactory, ctx *models.BuildContext)
 }
 
 func enhanceBuildFlags(args []string) []string {
-	// Add necessary flags for collection
 	enhanced := make([]string, len(args))
 	copy(enhanced, args)
 
-	// Add flags needed for kernel info collection
-	if !hasFlag(enhanced, "-Rpass=kernel-info") {
-		enhanced = append(enhanced, "-Rpass=kernel-info")
-	}
-
-	// Add flags for optimization remarks collection
+	// Add flags for remark collection
 	if !hasFlag(enhanced, "-Rpass=.*") {
 		enhanced = append(enhanced, "-Rpass=.*")
 	}
@@ -243,18 +240,15 @@ func enhanceBuildFlags(args []string) []string {
 		enhanced = append(enhanced, "-Rpass-analysis=.*")
 	}
 
-	// Explicitly disable optimization record files
+	// Disable optimization record files
 	if !hasFlag(enhanced, "-fno-save-optimization-record") {
 		enhanced = append(enhanced, "-fno-save-optimization-record")
 	}
 
-	// Remove -fsave-optimization-record if present
 	enhanced = removeFlag(enhanced, "-fsave-optimization-record")
-
 	return enhanced
 }
 
-// removeFlag removes a specific flag from the arguments slice
 func removeFlag(args []string, flag string) []string {
 	result := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
@@ -265,7 +259,6 @@ func removeFlag(args []string, flag string) []string {
 	return result
 }
 
-// hasFlag checks if a flag exists in the arguments
 func hasFlag(args []string, flag string) bool {
 	for _, arg := range args {
 		if arg == flag || strings.HasPrefix(arg, flag) {
@@ -275,38 +268,23 @@ func hasFlag(args []string, flag string) bool {
 	return false
 }
 
-func collectOutput(stdout, stderr io.ReadCloser, build *models.Build) {
-	var stdoutBuf, stderrBuf bytes.Buffer
-	go io.Copy(&stdoutBuf, stdout)
-	go io.Copy(&stderrBuf, stderr)
-
-	build.Output = models.OutputInfo{
-		Stdout: stdoutBuf.String(),
-		Stderr: stderrBuf.String(),
-	}
-}
-
 func storeBuildData(build *models.Build, collectorName string, data interface{}) {
 	switch collectorName {
 	case "environment":
-		if info, ok := data.(models.EnvironmentInfo); ok {
+		if info, ok := data.(models.Environment); ok {
 			build.Environment = info
 		}
 	case "hardware":
-		if info, ok := data.(models.HardwareInfo); ok {
+		if info, ok := data.(models.Hardware); ok {
 			build.Hardware = info
 		}
 	case "compiler":
-		if info, ok := data.(models.CompilerInfo); ok {
+		if info, ok := data.(models.Compiler); ok {
 			build.Compiler = info
 		}
-	case "kernel":
-		if info, ok := data.([]models.KernelRemark); ok {
-			build.KernelInfo = info
-		}
-	case "remarks":
-		if info, ok := data.([]models.LLVMRemark); ok {
-			build.LLVMRemarks = info
+	case "kernel", "remarks":
+		if remarks, ok := data.([]models.CompilerRemark); ok {
+			build.Remarks = append(build.Remarks, remarks...)
 		}
 	case "resource":
 		if info, ok := data.(models.ResourceUsage); ok {

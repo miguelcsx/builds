@@ -12,7 +12,7 @@ import (
 // Collector implements environment information collection
 type Collector struct {
 	models.BaseCollector
-	info models.EnvironmentInfo
+	info models.Environment
 }
 
 // NewCollector creates a new environment collector
@@ -29,7 +29,7 @@ func (c *Collector) Initialize(ctx context.Context) error {
 func (c *Collector) Collect(ctx context.Context) error {
 	// Get OS and architecture
 	c.info.OS = runtime.GOOS
-	c.info.Architecture = runtime.GOARCH
+	c.info.Arch = runtime.GOARCH
 
 	// Get current working directory
 	wd, err := os.Getwd()
@@ -39,12 +39,12 @@ func (c *Collector) Collect(ctx context.Context) error {
 	c.info.WorkingDir = wd
 
 	// Get environment variables
-	c.info.Environment = make(map[string]string)
+	c.info.Variables = make(map[string]string)
 	for _, env := range os.Environ() {
 		if key, value, ok := splitEnv(env); ok {
 			// Filter sensitive environment variables
 			if !isSensitiveEnv(key) {
-				c.info.Environment[key] = value
+				c.info.Variables[key] = value
 			}
 		}
 	}
@@ -64,12 +64,11 @@ func (c *Collector) Cleanup(ctx context.Context) error {
 
 // splitEnv splits environment variable into key and value
 func splitEnv(env string) (key, value string, ok bool) {
-	for i := 0; i < len(env); i++ {
-		if env[i] == '=' {
-			return env[:i], env[i+1:], true
-		}
+	parts := strings.SplitN(env, "=", 2)
+	if len(parts) != 2 {
+		return "", "", false
 	}
-	return "", "", false
+	return parts[0], parts[1], true
 }
 
 // isSensitiveEnv checks if an environment variable is sensitive

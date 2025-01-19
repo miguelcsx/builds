@@ -37,7 +37,7 @@ func (c *Collector) Initialize(ctx context.Context) error {
 	c.proc = proc
 
 	// Initialize statistics
-	c.info.ThreadCount = runtime.GOMAXPROCS(0)
+	c.info.Threads = int32(runtime.GOMAXPROCS(0))
 	return nil
 }
 
@@ -60,18 +60,18 @@ func (c *Collector) Collect(ctx context.Context) error {
 	// Get IO statistics
 	ioStats, err := c.proc.IOCounters()
 	if err == nil {
-		c.info.IOStats = models.IOStats{
-			ReadBytes:    int64(ioStats.ReadBytes),
-			WrittenBytes: int64(ioStats.WriteBytes),
-			ReadCount:    int64(ioStats.ReadCount),
-			WriteCount:   int64(ioStats.WriteCount),
+		c.info.IO = models.IOStats{
+			ReadBytes:  int64(ioStats.ReadBytes),
+			WriteBytes: int64(ioStats.WriteBytes),
+			ReadCount:  int64(ioStats.ReadCount),
+			WriteCount: int64(ioStats.WriteCount),
 		}
 	}
 
 	// Get thread count
 	threads, err := c.proc.NumThreads()
 	if err == nil {
-		c.info.ThreadCount = int(threads)
+		c.info.Threads = int32(threads)
 	}
 
 	return nil
@@ -110,6 +110,5 @@ func (c *Collector) GetResourceSnapshot() (*models.ResourceUsage, error) {
 	}
 
 	snapshot := c.info
-
 	return &snapshot, nil
 }

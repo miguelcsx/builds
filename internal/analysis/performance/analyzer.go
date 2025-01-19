@@ -47,22 +47,11 @@ func (a *Analyzer) Analyze() (*AnalysisResult, error) {
 		OptimizationMetrics: make(map[string]int),
 	}
 
-	// Analyze resource efficiency
 	result.ResourceEfficiency = a.calculateResourceEfficiency()
-
-	// Analyze memory usage
 	result.MemoryUsageProfile = a.analyzeMemoryUsage()
-
-	// Analyze compilation overhead
 	result.CompilationOverhead = a.analyzeCompilationOverhead()
-
-	// Analyze optimization metrics
 	result.OptimizationMetrics = a.analyzeOptimizationMetrics()
-
-	// Identify bottlenecks
 	result.Bottlenecks = a.identifyBottlenecks()
-
-	// Generate recommendations
 	result.Recommendations = a.generateRecommendations(result.Bottlenecks)
 
 	return result, nil
@@ -74,7 +63,7 @@ func (a *Analyzer) calculateResourceEfficiency() float64 {
 	}
 
 	// Calculate efficiency based on CPU utilization and memory usage
-	cpuEfficiency := float64(a.build.ResourceUsage.ThreadCount) / float64(a.build.Hardware.NumCores)
+	cpuEfficiency := float64(a.build.ResourceUsage.Threads) / float64(a.build.Hardware.CPU.Cores)
 	memoryEfficiency := float64(a.build.ResourceUsage.MaxMemory) / float64(a.build.Hardware.Memory.Total)
 
 	return (cpuEfficiency + memoryEfficiency) / 2.0
@@ -92,14 +81,18 @@ func (a *Analyzer) analyzeMemoryUsage() map[string]int64 {
 }
 
 func (a *Analyzer) calculateWastedMemory() int64 {
-	// Calculate potentially wasted memory based on allocation patterns
 	var wastedMemory int64
 
-	// Check for large allocations in kernel remarks
-	for _, remark := range a.build.KernelInfo {
+	// Check for large allocations in compiler remarks
+	for _, remark := range a.build.Remarks {
 		if strings.Contains(remark.Message, "alloca") {
-			if size, err := strconv.ParseInt(remark.Value, 10, 64); err == nil {
-				wastedMemory += size
+			// Look for memory size in remark args
+			for _, arg := range remark.Args {
+				if arg.String != "" {
+					if size, err := strconv.ParseInt(arg.String, 10, 64); err == nil {
+						wastedMemory += size
+					}
+				}
 			}
 		}
 	}
@@ -122,13 +115,13 @@ func (a *Analyzer) analyzeOptimizationMetrics() map[string]int {
 	metrics := make(map[string]int)
 
 	// Count optimization remarks by type
-	for _, remark := range a.build.LLVMRemarks {
+	for _, remark := range a.build.Remarks {
 		switch remark.Type {
-		case "!Passed":
+		case "Passed":
 			metrics["successful_optimizations"]++
-		case "!Missed":
+		case "Missed":
 			metrics["missed_optimizations"]++
-		case "!Analysis":
+		case "Analysis":
 			metrics["analysis_remarks"]++
 		}
 	}
@@ -151,7 +144,7 @@ func (a *Analyzer) identifyBottlenecks() []PerformanceBottleneck {
 	}
 
 	// Check compilation time
-	if a.build.Performance.CompileTime > 60.0 { // More than 1 minute
+	if a.build.Performance.CompileTime > 60.0 {
 		bottlenecks = append(bottlenecks, PerformanceBottleneck{
 			Type:        "compilation",
 			Severity:    "medium",
@@ -162,8 +155,8 @@ func (a *Analyzer) identifyBottlenecks() []PerformanceBottleneck {
 
 	// Check optimization effectiveness
 	missedOpts := 0
-	for _, remark := range a.build.LLVMRemarks {
-		if remark.Type == "!Missed" {
+	for _, remark := range a.build.Remarks {
+		if remark.Type == "Missed" {
 			missedOpts++
 		}
 	}

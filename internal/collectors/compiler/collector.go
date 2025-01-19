@@ -12,7 +12,7 @@ import (
 // Collector implements compiler information collection
 type Collector struct {
 	models.BaseCollector
-	info         models.CompilerInfo
+	info         models.Compiler
 	buildContext *models.BuildContext
 }
 
@@ -27,6 +27,13 @@ var (
 func NewCollector(ctx *models.BuildContext) *Collector {
 	return &Collector{
 		buildContext: ctx,
+		info: models.Compiler{
+			Language:      models.Language{},
+			Features:      models.CompilerFeatures{},
+			Options:       []string{},
+			Optimizations: make(map[string]bool),
+			Flags:         make(map[string]string),
+		},
 	}
 }
 
@@ -63,6 +70,12 @@ func (c *Collector) Collect(ctx context.Context) error {
 	}
 	c.info.Optimizations = opts
 
+	// Set language information
+	c.setLanguageInfo()
+
+	// Collect compiler features
+	c.collectFeatures()
+
 	return nil
 }
 
@@ -76,7 +89,35 @@ func (c *Collector) Cleanup(ctx context.Context) error {
 	return nil
 }
 
-// inferCompilerType determines the compiler type from the executable
+// setLanguageInfo sets the language information based on compiler type
+func (c *Collector) setLanguageInfo() {
+	switch c.info.Name {
+	case "clang":
+		c.info.Language = models.Language{
+			Name:          "C/C++",
+			Version:       "C++17", // Default, could be determined from flags
+			Specification: "ISO/IEC 14882:2017",
+		}
+	case "gcc":
+		c.info.Language = models.Language{
+			Name:          "C/C++",
+			Version:       "C++17",
+			Specification: "ISO/IEC 14882:2017",
+		}
+	}
+}
+
+// collectFeatures collects compiler feature information
+func (c *Collector) collectFeatures() {
+	c.info.Features = models.CompilerFeatures{
+		SupportsOpenMP: c.hasOpenMPSupport(),
+		SupportsGPU:    c.hasGPUSupport(),
+		SupportsLTO:    c.hasLTOSupport(),
+		SupportsPGO:    c.hasPGOSupport(),
+		Extensions:     c.getCompilerExtensions(),
+	}
+}
+
 func (c *Collector) inferCompilerType(compiler string) string {
 	base := strings.ToLower(compiler)
 	switch {
@@ -151,7 +192,7 @@ func (c *Collector) parseCompilerOptions(args []string) []string {
 func (c *Collector) collectOptimizations() (map[string]bool, error) {
 	optimizations := make(map[string]bool)
 
-	// Check common optimization flags
+	// Parse optimization flags from options
 	for _, arg := range c.info.Options {
 		switch arg {
 		case "-O0":
@@ -168,16 +209,11 @@ func (c *Collector) collectOptimizations() (map[string]bool, error) {
 		case "-march=native":
 			optimizations["native_architecture"] = true
 		}
-	}
 
-	// Check for OpenMP support
-	if c.hasOpenMPSupport() {
-		optimizations["openmp_support"] = true
-	}
-
-	// Check for CUDA/GPU support
-	if c.hasGPUSupport() {
-		optimizations["gpu_support"] = true
+		// Add flag to the flags map with its value
+		if strings.HasPrefix(arg, "-f") {
+			c.info.Flags[arg] = "enabled"
+		}
 	}
 
 	return optimizations, nil
@@ -187,9 +223,7 @@ func (c *Collector) collectOptimizations() (map[string]bool, error) {
 func (c *Collector) hasOpenMPSupport() bool {
 	var testProgram string
 	switch c.info.Name {
-	case "clang":
-		testProgram = "#include <omp.h>\nint main() { return 0; }"
-	case "gcc":
+	case "clang", "gcc":
 		testProgram = "#include <omp.h>\nint main() { return 0; }"
 	default:
 		return false
@@ -202,25 +236,39 @@ func (c *Collector) hasOpenMPSupport() bool {
 
 // hasGPUSupport checks if GPU compilation is supported
 func (c *Collector) hasGPUSupport() bool {
-	// Check for CUDA support
-	if _, err := exec.LookPath("nvcc"); err == nil {
-		return true
-	}
-
-	// Check for OpenCL support
-	if _, err := exec.LookPath("clinfo"); err == nil {
-		return true
-	}
-
-	// Check specific compiler features
 	switch c.info.Name {
 	case "clang":
 		return c.hasClangGPUSupport()
 	case "gcc":
 		return c.hasGCCGPUSupport()
 	}
-
 	return false
+}
+
+// hasLTOSupport checks if Link Time Optimization is supported
+func (c *Collector) hasLTOSupport() bool {
+	cmd := exec.Command(c.buildContext.Compiler, "-flto=thin", "--help")
+	return cmd.Run() == nil
+}
+
+// hasPGOSupport checks if Profile Guided Optimization is supported
+func (c *Collector) hasPGOSupport() bool {
+	cmd := exec.Command(c.buildContext.Compiler, "-fprofile-generate", "--help")
+	return cmd.Run() == nil
+}
+
+// getCompilerExtensions returns supported compiler extensions
+func (c *Collector) getCompilerExtensions() []string {
+	var extensions []string
+
+	switch c.info.Name {
+	case "clang":
+		extensions = []string{"OpenMP", "OpenCL", "CUDA", "HIP"}
+	case "gcc":
+		extensions = []string{"OpenMP", "OpenACC", "NVPTX"}
+	}
+
+	return extensions
 }
 
 // hasClangGPUSupport checks Clang-specific GPU support
