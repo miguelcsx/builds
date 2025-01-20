@@ -1,3 +1,4 @@
+// internal/reporters/text/reporter.go
 package text
 
 import (

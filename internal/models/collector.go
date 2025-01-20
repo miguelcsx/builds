@@ -1,3 +1,5 @@
+// internal/models/collector.go
+
 package models
 
 import (

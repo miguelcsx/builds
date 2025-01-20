@@ -1,0 +1,39 @@
+services:
+  db:
+    image: postgres:latest
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  builds-server:
+    build:
+      context: .
+      dockerfile: docker/buildsd.Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_HOST: db  # Docker service name for the database container
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: ${POSTGRES_DB}
+      DATABASE_URL: ${DATABASE_URL}
+    ports:
+      - "8080:50051"
+
+  builds-lb:
+    image: nginx:latest
+    depends_on:
+      - builds-server
+    environment:
+      GRPC_SERVER: builds-server
+    ports:
+      - "80:80"

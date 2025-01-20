@@ -1,3 +1,5 @@
+// internal/parsers/kernel/parser.go
+
 package kernel
 
 import (

@@ -1,3 +1,4 @@
+// internal/analysis/performance/analyzer.go
 package performance
 
 import (

@@ -1,0 +1,44 @@
+// proto/build/service.proto
+syntax = "proto3";
+
+package build.v1;
+option go_package = "builds/api/build";
+
+import "build/build.proto";
+import "google/protobuf/empty.proto";
+
+service BuildService {
+  rpc CreateBuild(CreateBuildRequest) returns (Build);
+  rpc GetBuild(GetBuildRequest) returns (Build);
+  rpc ListBuilds(ListBuildsRequest) returns (ListBuildsResponse);
+  rpc DeleteBuild(DeleteBuildRequest) returns (google.protobuf.Empty);
+  rpc StreamBuilds(StreamBuildsRequest) returns (stream Build);
+}
+
+message CreateBuildRequest {
+  Build build = 1;
+}
+
+message GetBuildRequest {
+  string id = 1;
+}
+
+message ListBuildsRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+  string filter = 3;
+}
+
+message ListBuildsResponse {
+  repeated Build builds = 1;
+  string next_page_token = 2;
+  int32 total_size = 3;
+}
+
+message DeleteBuildRequest {
+  string id = 1;
+}
+
+message StreamBuildsRequest {
+  string filter = 1;
+}

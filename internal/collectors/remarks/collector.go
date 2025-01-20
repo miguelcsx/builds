@@ -1,3 +1,5 @@
+// internal/collectors/remarks/collector.go
+
 package remarks
 
 import (

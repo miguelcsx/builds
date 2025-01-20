@@ -1,3 +1,5 @@
+// internal/collectors/environment/collector.go
+
 package environment
 
 import (

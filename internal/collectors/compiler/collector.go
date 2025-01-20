@@ -1,3 +1,4 @@
+// internal/collectors/compiler/collector.go
 package compiler
 
 import (

@@ -1,16 +1,39 @@
-# justfile
+# Variables
+PROTO_DIR := "proto"
+API_DIR := "api"
 
-build:
-    go build -o bin/builds ./cmd/builds
+# Compile everything
+all: clean proto build
 
-run *args:
-    ./bin/builds {{args}}
-
-test:
-    go test ./...
-
+# Clean generated files
 clean:
-    rm -rf bin/ build-*/
+	rm -rf {{API_DIR}}
+	rm -rf bin/
+	find . -type f -name '*.pb.go' -delete
 
-# Example usage:
-# just run -output ./build-output clang -O2 -g -fopenmp --offload-arch=native main.c -foffload-lto -Rpass=kernel-info
+# Generate proto buffers
+proto:
+	mkdir -p {{API_DIR}}
+	protoc -I={{PROTO_DIR}} \
+		--go_out={{API_DIR}} --go_opt=paths=source_relative \
+		--go-grpc_out={{API_DIR}} --go-grpc_opt=paths=source_relative \
+		{{PROTO_DIR}}/build/*.proto
+
+# Build binaries
+build:
+	go build -o bin/builds ./cmd/builds
+	go build -o bin/buildsd ./cmd/buildsd
+	go build -o bin/buildsctl ./cmd/buildsctl
+
+# Build Docker images
+docker-build:
+	docker-compose build
+
+# Start services
+docker-up:
+	@just docker-build
+	docker-compose up
+
+# Stop services
+docker-down:
+	docker-compose down

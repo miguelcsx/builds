@@ -1,3 +1,5 @@
+// internal/collectors/hardware/collector.go
+
 package hardware
 
 import (

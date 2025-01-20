@@ -1,3 +1,5 @@
+// internal/collectors/resource/collector.go
+
 package resource
 
 import (

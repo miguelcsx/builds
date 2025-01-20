@@ -1,18 +1,22 @@
+// cmd/builds/main.go
+
 package main
 
 import (
-	"bytes"
 	"context"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
-	"builds/internal/analysis/performance"
+	"github.com/google/uuid"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
+	buildv1 "builds/api/build"
 	"builds/internal/collectors/compiler"
 	"builds/internal/collectors/environment"
 	"builds/internal/collectors/hardware"
@@ -20,16 +24,10 @@ import (
 	"builds/internal/collectors/remarks"
 	"builds/internal/collectors/resource"
 	"builds/internal/models"
-	"builds/internal/reporters"
-	"builds/pkg/config"
-
-	"github.com/google/uuid"
 )
 
 var (
-	configFile = flag.String("config", "", "Path to configuration file")
-	outputDir  = flag.String("output", "", "Output directory for reports")
-	format     = flag.String("format", "txt", "Report format (txt, json, or html)")
+	serverAddr = flag.String("server", "localhost:8080", "The server address")
 	verbose    = flag.Bool("verbose", false, "Enable verbose output")
 	version    = flag.Bool("version", false, "Show version information")
 )
@@ -37,14 +35,6 @@ var (
 const buildVersion = "0.1.0"
 
 func main() {
-	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s [options] <build command>\n\n", os.Args[0])
-		fmt.Fprintln(os.Stderr, "Options:")
-		flag.PrintDefaults()
-		fmt.Fprintln(os.Stderr, "\nExample:")
-		fmt.Fprintln(os.Stderr, "  builds -format json clang -O2 -g -fopenmp test.c")
-	}
-
 	flag.Parse()
 
 	if *version {
@@ -53,242 +43,218 @@ func main() {
 	}
 
 	if flag.NArg() < 1 {
-		flag.Usage()
+		fmt.Fprintf(os.Stderr, "Usage: %s [flags] compiler [args...]\n", os.Args[0])
+		flag.PrintDefaults()
 		os.Exit(1)
 	}
 
-	// Load configuration
-	cfg, err := loadConfig(*configFile)
-	if err != nil {
-		log.Printf("Warning: using default configuration: %v", err)
-		cfg = config.DefaultConfig()
-	}
+	buildID := uuid.New().String()
+	startTime := time.Now()
 
 	// Create build context
-	buildCtx := createBuildContext(cfg, flag.Args())
-	if buildCtx == nil {
-		log.Printf("Error: No build command provided")
-		flag.Usage()
-		os.Exit(1)
-	}
-
-	// Execute build and collect information
-	build, err := executeBuild(buildCtx, flag.Args())
-
-	// Analyze results
-	analyzer := performance.NewAnalyzer(build)
-	analysis, err := analyzer.Analyze()
-	if err != nil {
-		log.Printf("Analysis failed: %v", err)
-	}
-
-	// Generate reports
-	outDir := *outputDir
-	if outDir == "" {
-		outDir = cfg.ReportDir
-	}
-
-	reporter, err := reporters.NewReporter(reporters.Options{
-		OutputDir: outDir,
-		Format:    *format,
-		Build:     build,
-		Analysis:  analysis,
-	})
-	if err != nil {
-		log.Printf("Failed to create reporter: %v", err)
-		os.Exit(1)
-	}
-
-	if err := reporter.Generate(); err != nil {
-		log.Printf("Failed to generate report: %v", err)
-		os.Exit(1)
-	}
-
-	if *verbose {
-		fmt.Printf("Build completed. Reports generated in: %s\n", outDir)
-	}
-}
-
-func loadConfig(path string) (*config.Config, error) {
-	if path == "" {
-		return config.DefaultConfig(), nil
-	}
-	return config.LoadConfig(path)
-}
-
-func createBuildContext(cfg *config.Config, args []string) *models.BuildContext {
-	if len(args) == 0 {
-		return nil
-	}
-
-	return &models.BuildContext{
-		Context:   context.Background(),
-		BuildID:   uuid.New().String(),
-		OutputDir: cfg.BuildDir,
-		Compiler:  args[0],  // First argument is the compiler
-		Args:      args[1:], // Rest of the arguments
+	buildCtx := &models.BuildContext{
+		Context:  context.Background(),
+		BuildID:  buildID,
+		Compiler: flag.Arg(0),
+		Args:     flag.Args()[1:],
 		Config: &models.CollectorConfig{
 			Enabled:     true,
 			Timeout:     300,
 			MaxAttempts: 3,
 		},
 	}
-}
-
-func executeBuild(buildCtx *models.BuildContext, args []string) (*models.Build, error) {
-	build := &models.Build{
-		ID:        buildCtx.BuildID,
-		StartTime: time.Now(),
-		Command: models.Command{
-			Executable: buildCtx.Compiler,
-			Arguments:  buildCtx.Args,
-			WorkingDir: buildCtx.OutputDir,
-		},
-	}
 
 	// Initialize collectors
 	factory := models.NewCollectorFactory()
-	setupCollectors(factory, buildCtx)
+	factory.RegisterCollector("environment", environment.NewCollector())
+	factory.RegisterCollector("hardware", hardware.NewCollector())
+	factory.RegisterCollector("compiler", compiler.NewCollector(buildCtx))
+	factory.RegisterCollector("kernel", kernel.NewCollector(buildCtx, os.Stderr))
+	factory.RegisterCollector("remarks", remarks.NewCollector(buildCtx))
+	factory.RegisterCollector("resource", resource.NewCollector(buildCtx))
 
-	// Create command with enhanced flags for collection
-	cmdArgs := enhanceBuildFlags(buildCtx.Args)
-	cmd := exec.CommandContext(buildCtx.Context, buildCtx.Compiler, cmdArgs...)
-
-	// Capture stdout and stderr
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return build, fmt.Errorf("getting stdout pipe: %w", err)
+	// Initialize and run collectors
+	build := &buildv1.Build{
+		Id:        buildID,
+		StartTime: timestamppb.New(startTime),
 	}
 
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return build, fmt.Errorf("getting stderr pipe: %w", err)
-	}
+	ctx := context.Background()
 
-	// Start collectors
+	// Initialize collectors
 	for name, collector := range factory.GetCollectors() {
-		if err := collector.Initialize(buildCtx.Context); err != nil {
+		if err := collector.Initialize(ctx); err != nil {
 			log.Printf("Warning: failed to initialize %s collector: %v", name, err)
 			continue
 		}
 	}
 
-	// Start build
-	if err := cmd.Start(); err != nil {
-		return build, fmt.Errorf("starting build: %w", err)
-	}
-
-	// Setup output collection
-	var stdoutBuf, stderrBuf bytes.Buffer
-	go io.Copy(&stdoutBuf, stdout)
-	go io.Copy(&stderrBuf, stderr)
-
-	// Wait for build to complete
-	err = cmd.Wait()
-	build.EndTime = time.Now()
-	build.Duration = build.EndTime.Sub(build.StartTime).Seconds()
-	build.Success = err == nil
-	if !build.Success {
-		build.Error = err.Error()
-	}
-
-	// Store the build output
-	build.Output = models.Output{
-		Stdout:    stdoutBuf.String(),
-		Stderr:    stderrBuf.String(),
-		ExitCode:  int32(cmd.ProcessState.ExitCode()),
-		Artifacts: []models.Artifact{}, // Will be populated by collectors
-	}
-
 	// Run collectors
 	for name, collector := range factory.GetCollectors() {
-		if err := collector.Collect(buildCtx.Context); err != nil {
+		if err := collector.Collect(ctx); err != nil {
 			log.Printf("Warning: collection failed for %s: %v", name, err)
 			continue
 		}
 
-		// Store collected data in build info
+		// Store collected data
 		if data := collector.GetData(); data != nil {
-			storeBuildData(build, name, data)
+			switch name {
+			case "environment":
+				if env, ok := data.(models.Environment); ok {
+					build.Environment = convertEnvironment(env)
+				}
+			case "hardware":
+				if hw, ok := data.(models.Hardware); ok {
+					build.Hardware = convertHardware(hw)
+				}
+			case "compiler":
+				if comp, ok := data.(models.Compiler); ok {
+					build.Compiler = convertCompiler(comp)
+				}
+			case "resource":
+				if res, ok := data.(models.ResourceUsage); ok {
+					build.ResourceUsage = convertResourceUsage(res)
+				}
+			case "remarks":
+				if remarks, ok := data.([]models.CompilerRemark); ok {
+					build.Remarks = convertRemarks(remarks)
+				}
+			}
 		}
 	}
 
-	return build, err
+	// Set end time and duration
+	endTime := time.Now()
+	build.EndTime = timestamppb.New(endTime)
+	build.Duration = endTime.Sub(startTime).Seconds()
+
+	// Connect to the server
+	conn, err := grpc.Dial(*serverAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		log.Fatalf("Failed to connect: %v", err)
+	}
+	defer conn.Close()
+
+	client := buildv1.NewBuildServiceClient(conn)
+
+	// Store build
+	response, err := client.CreateBuild(ctx, &buildv1.CreateBuildRequest{
+		Build: build,
+	})
+	if err != nil {
+		log.Fatalf("Failed to store build: %v", err)
+	}
+
+	if *verbose {
+		fmt.Printf("Build completed. Build ID: %s\n", response.Id)
+		fmt.Printf("Build success: %v\n", build.Success)
+		if build.Error != "" {
+			fmt.Printf("Build error: %s\n", build.Error)
+		}
+	} else {
+		fmt.Printf("Build ID: %s\n", response.Id)
+	}
 }
 
-func setupCollectors(factory *models.CollectorFactory, ctx *models.BuildContext) {
-	factory.RegisterCollector("environment", environment.NewCollector())
-	factory.RegisterCollector("hardware", hardware.NewCollector())
-	factory.RegisterCollector("compiler", compiler.NewCollector(ctx))
-	factory.RegisterCollector("kernel", kernel.NewCollector(ctx, os.Stderr))
-	factory.RegisterCollector("remarks", remarks.NewCollector(ctx))
-	factory.RegisterCollector("resource", resource.NewCollector(ctx))
+// Converter functions for collected data
+func convertEnvironment(env models.Environment) *buildv1.Environment {
+	variables := make(map[string]string)
+	for _, v := range env.Variables {
+		if pair := strings.SplitN(v, "=", 2); len(pair) == 2 {
+			variables[pair[0]] = pair[1]
+		}
+	}
+
+	return &buildv1.Environment{
+		Os:         env.OS,
+		Arch:       env.Arch,
+		WorkingDir: env.WorkingDir,
+		Variables:  variables,
+	}
 }
 
-func enhanceBuildFlags(args []string) []string {
-	enhanced := make([]string, len(args))
-	copy(enhanced, args)
-
-	// Add flags for remark collection
-	if !hasFlag(enhanced, "-Rpass=.*") {
-		enhanced = append(enhanced, "-Rpass=.*")
-	}
-	if !hasFlag(enhanced, "-Rpass-missed=.*") {
-		enhanced = append(enhanced, "-Rpass-missed=.*")
-	}
-	if !hasFlag(enhanced, "-Rpass-analysis=.*") {
-		enhanced = append(enhanced, "-Rpass-analysis=.*")
+func convertHardware(hw models.Hardware) *buildv1.Hardware {
+	gpus := make([]*buildv1.GPU, len(hw.GPUs))
+	for i, gpu := range hw.GPUs {
+		gpus[i] = &buildv1.GPU{
+			Model:       gpu.Model,
+			Memory:      gpu.Memory,
+			Driver:      gpu.Driver,
+			ComputeCaps: gpu.ComputeCaps,
+		}
 	}
 
-	// Disable optimization record files
-	if !hasFlag(enhanced, "-fno-save-optimization-record") {
-		enhanced = append(enhanced, "-fno-save-optimization-record")
+	return &buildv1.Hardware{
+		Cpu: &buildv1.CPU{
+			Model:     hw.CPU.Model,
+			Vendor:    hw.CPU.Vendor,
+			Cores:     hw.CPU.Cores,
+			Threads:   hw.CPU.Threads,
+			Frequency: hw.CPU.Frequency,
+			CacheSize: hw.CPU.CacheSize,
+		},
+		Memory: &buildv1.Memory{
+			Total:     hw.Memory.Total,
+			Available: hw.Memory.Available,
+			Used:      hw.Memory.Used,
+			SwapTotal: hw.Memory.SwapTotal,
+			SwapFree:  hw.Memory.SwapFree,
+		},
+		Gpus: gpus,
 	}
-
-	enhanced = removeFlag(enhanced, "-fsave-optimization-record")
-	return enhanced
 }
 
-func removeFlag(args []string, flag string) []string {
-	result := make([]string, 0, len(args))
-	for i := 0; i < len(args); i++ {
-		if args[i] != flag {
-			result = append(result, args[i])
-		}
+func convertCompiler(comp models.Compiler) *buildv1.Compiler {
+	return &buildv1.Compiler{
+		Name:    comp.Name,
+		Version: comp.Version,
+		Target:  comp.Target,
+		Language: &buildv1.Language{
+			Name:          comp.Language.Name,
+			Version:       comp.Language.Version,
+			Specification: comp.Language.Specification,
+		},
+		Features: &buildv1.CompilerFeatures{
+			SupportsOpenmp: comp.Features.SupportsOpenMP,
+			SupportsGpu:    comp.Features.SupportsGPU,
+			SupportsLto:    comp.Features.SupportsLTO,
+			SupportsPgo:    comp.Features.SupportsPGO,
+			Extensions:     comp.Features.Extensions,
+		},
+		Options:       comp.Options,
+		Optimizations: comp.Optimizations,
+		Flags:         comp.Flags,
 	}
-	return result
 }
 
-func hasFlag(args []string, flag string) bool {
-	for _, arg := range args {
-		if arg == flag || strings.HasPrefix(arg, flag) {
-			return true
-		}
+func convertResourceUsage(res models.ResourceUsage) *buildv1.ResourceUsage {
+	return &buildv1.ResourceUsage{
+		MaxMemory: res.MaxMemory,
+		CpuTime:   res.CPUTime,
+		Threads:   res.Threads,
+		Io: &buildv1.IOStats{
+			ReadBytes:  res.IO.ReadBytes,
+			WriteBytes: res.IO.WriteBytes,
+			ReadCount:  res.IO.ReadCount,
+			WriteCount: res.IO.WriteCount,
+		},
 	}
-	return false
 }
 
-func storeBuildData(build *models.Build, collectorName string, data interface{}) {
-	switch collectorName {
-	case "environment":
-		if info, ok := data.(models.Environment); ok {
-			build.Environment = info
-		}
-	case "hardware":
-		if info, ok := data.(models.Hardware); ok {
-			build.Hardware = info
-		}
-	case "compiler":
-		if info, ok := data.(models.Compiler); ok {
-			build.Compiler = info
-		}
-	case "kernel", "remarks":
-		if remarks, ok := data.([]models.CompilerRemark); ok {
-			build.Remarks = append(build.Remarks, remarks...)
-		}
-	case "resource":
-		if info, ok := data.(models.ResourceUsage); ok {
-			build.ResourceUsage = info
+func convertRemarks(remarks []models.CompilerRemark) []*buildv1.CompilerRemark {
+	pbRemarks := make([]*buildv1.CompilerRemark, len(remarks))
+	for i, remark := range remarks {
+		pbRemarks[i] = &buildv1.CompilerRemark{
+			Type:     remark.Type,
+			Pass:     remark.Pass,
+			Message:  remark.Message,
+			Function: remark.Function,
+			Location: &buildv1.Location{
+				File:   remark.Location.File,
+				Line:   remark.Location.Line,
+				Column: remark.Location.Column,
+			},
 		}
 	}
+	return pbRemarks
 }

@@ -1,0 +1,165 @@
+// proto/build/build.proto
+syntax = "proto3";
+
+package build.v1;
+option go_package = "builds/api/build";
+
+import "google/protobuf/timestamp.proto";
+
+message Build {
+  string id = 1;
+  google.protobuf.Timestamp start_time = 2;
+  google.protobuf.Timestamp end_time = 3;
+  double duration = 4;
+  bool success = 5;
+  string error = 6;
+  
+  Environment environment = 7;
+  Hardware hardware = 8;
+  Compiler compiler = 9;
+  Command command = 10;
+  Output output = 11;
+  BuildMetrics metrics = 12;
+  repeated CompilerRemark remarks = 13;
+  ResourceUsage resource_usage = 14;
+  Performance performance = 15;
+}
+
+message Environment {
+  string os = 1;
+  string arch = 2;
+  map<string, string> variables = 3;
+  string working_dir = 4;
+}
+
+message Hardware {
+  CPU cpu = 1;
+  Memory memory = 2;
+  repeated GPU gpus = 3;
+}
+
+message CPU {
+  string model = 1;
+  double frequency = 2;
+  int32 cores = 3;
+  int32 threads = 4;
+  string vendor = 5;
+  int64 cache_size = 6;
+}
+
+message Memory {
+  int64 total = 1;
+  int64 available = 2;
+  int64 swap_total = 3;
+  int64 swap_free = 4;
+  int64 used = 5;
+}
+
+message GPU {
+  string model = 1;
+  int64 memory = 2;
+  string driver = 3;
+  string compute_caps = 4;
+}
+
+message Compiler {
+  string name = 1;
+  string version = 2;
+  string target = 3;
+  repeated string options = 4;
+  map<string, bool> optimizations = 5;
+  map<string, string> flags = 6;
+  Language language = 7;
+  CompilerFeatures features = 8;
+}
+
+message Language {
+  string name = 1;
+  string version = 2;
+  string specification = 3;
+}
+
+message CompilerFeatures {
+  bool supports_openmp = 1;
+  bool supports_gpu = 2;
+  bool supports_lto = 3;
+  bool supports_pgo = 4;
+  repeated string extensions = 5;
+}
+
+message Command {
+  string executable = 1;
+  repeated string arguments = 2;
+  string working_dir = 3;
+  map<string, string> env = 4;
+}
+
+message Output {
+  string stdout = 1;
+  string stderr = 2;
+  repeated Artifact artifacts = 3;
+  int32 exit_code = 4;
+  repeated string warnings = 5;
+  repeated string errors = 6;
+}
+
+message Artifact {
+  string path = 1;
+  string type = 2;
+  int64 size = 3;
+  string hash = 4;
+}
+
+message CompilerRemark {
+  string type = 1;
+  string pass = 2;
+  string message = 3;
+  Location location = 4;
+  string function = 5;
+  repeated RemarkArg args = 6;
+}
+
+message Location {
+  string file = 1;
+  int32 line = 2;
+  int32 column = 3;
+  string function = 4;
+}
+
+message RemarkArg {
+  string string_val = 1;
+  string callee = 2;
+  Location location = 3;
+  string reason = 4;
+}
+
+message ResourceUsage {
+  int64 max_memory = 1;
+  double cpu_time = 2;
+  int32 threads = 3;
+  IOStats io = 4;
+}
+
+message IOStats {
+  int64 read_bytes = 1;
+  int64 write_bytes = 2;
+  int64 read_count = 3;
+  int64 write_count = 4;
+}
+
+message Performance {
+  double compile_time = 1;
+  double link_time = 2;
+  double optimize_time = 3;
+  map<string, double> phases = 4;
+}
+
+message BuildMetrics {
+  int32 total_files = 1;
+  int32 processed_files = 2;
+  int32 warnings = 3;
+  int32 errors = 4;
+  int64 input_size = 5;
+  int64 output_size = 6;
+  map<string, double> metrics = 7;
+}

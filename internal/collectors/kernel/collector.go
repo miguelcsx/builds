@@ -1,3 +1,5 @@
+// internal/collectors/kernel/collector.go
+
 package kernel
 
 import (

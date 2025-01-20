@@ -1,3 +1,4 @@
+// internal/reporters/reporter.go
 package reporters
 
 import (
