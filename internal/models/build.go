@@ -120,14 +120,54 @@ type Artifact struct {
 	Hash string `json:"hash"`
 }
 
+// Represents the type of compiler remark
+type RemarkType string
+
+const (
+	RemarkTypeOptimization RemarkType = "optimization"
+	RemarkTypeKernel       RemarkType = "kernel"
+	RemarkTypeAnalysis     RemarkType = "analysis"
+	RemarkTypeMetric       RemarkType = "metric"
+	RemarkTypeInfo         RemarkType = "info"
+)
+
+// Represents the type of compiler pass
+type PassType string
+
+const (
+	PassTypeVectorization PassType = "vectorization"
+	PassTypeInlining      PassType = "inlining"
+	PassTypeAnalysis      PassType = "analysis"
+	PassTypeKernelInfo    PassType = "kernel-info"
+	PassTypeSizeInfo      PassType = "size-info"
+)
+
+// Represents the status of a remark
+type RemarkStatus string
+
+const (
+	RemarkStatusPassed   RemarkStatus = "passed"
+	RemarkStatusMissed   RemarkStatus = "missed"
+	RemarkStatusAnalysis RemarkStatus = "analysis"
+)
+
 // CompilerRemark represents a generic compiler remark/diagnostic
 type CompilerRemark struct {
-	Type     string      `json:"type"`
-	Pass     string      `json:"pass"`
-	Message  string      `json:"message"`
-	Location Location    `json:"location"`
-	Function string      `json:"function"`
-	Args     []RemarkArg `json:"args,omitempty"`
+	ID        string       `json:"id"`
+	Type      RemarkType   `json:"type"`
+	Pass      PassType     `json:"pass"`
+	Status    RemarkStatus `json:"status"`
+	Message   string       `json:"message"`
+	Function  string       `json:"function"`
+	Timestamp time.Time    `json:"timestamp"`
+
+	// Source location
+	Location Location `json:"location"`
+
+	// Kernel-specific information
+	KernelInfo *KernelInfo `json:"kernelInfo,omitempty"`
+
+	Metadata map[string]interface{} `json:"metadata,omitempty"`
 }
 
 type Location struct {
@@ -135,13 +175,47 @@ type Location struct {
 	Line     int32  `json:"line"`
 	Column   int32  `json:"column"`
 	Function string `json:"function"`
+	Region   string `json:"region"`
+	Artifact bool   `json:"artifact"`
 }
 
-type RemarkArg struct {
-	String   string    `json:"string,omitempty"`
-	Callee   string    `json:"callee,omitempty"`
-	Location *Location `json:"location,omitempty"`
-	Reason   string    `json:"reason,omitempty"`
+// KernelInfo contains kernel-specific information
+type KernelInfo struct {
+	// Kernel characteristics
+	ThreadLimit  int32  `json:"thread_limit,omitempty"`
+	MaxThreadsX  int32  `json:"max_threads_x,omitempty"`
+	MaxThreadsY  int32  `json:"max_threads_y,omitempty"`
+	MaxThreadsZ  int32  `json:"max_threads_z,omitempty"`
+	SharedMemory int64  `json:"shared_memory,omitempty"`
+	Target       string `json:"target,omitempty"`
+
+	// Memory access patterns
+	MemoryAccesses []MemoryAccess `json:"memory_accesses,omitempty"`
+
+	// Function calls
+	DirectCalls   int32    `json:"direct_calls,omitempty"`
+	IndirectCalls int32    `json:"indirect_calls,omitempty"`
+	Callees       []string `json:"callees,omitempty"`
+
+	// Resource usage
+	AllocasCount        int32 `json:"allocas_count,omitempty"`
+	AllocasStaticSize   int64 `json:"allocas_static_size,omitempty"`
+	AllocasDynamicCount int32 `json:"allocas_dynamic_count,omitempty"`
+
+	// Other metrics
+	FlatAddressSpaceAccesses int32             `json:"flat_address_space_accesses,omitempty"`
+	InlineAssemblyCalls      int32             `json:"inline_assembly_calls,omitempty"`
+	Metrics                  map[string]int64  `json:"metrics,omitempty"`
+	Attributes               map[string]string `json:"attributes,omitempty"`
+}
+
+// MemoryAccess represents a memory access pattern in kernel code
+type MemoryAccess struct {
+	Type          string `json:"type"`           // load, store, atomic, etc.
+	AddressSpace  string `json:"address_space"`  // flat, shared, global, etc.
+	Instruction   string `json:"instruction"`    // LLVM IR instruction
+	Variable      string `json:"variable"`       // Variable being accessed
+	AccessPattern string `json:"access_pattern"` // Sequential, strided, etc.
 }
 
 // ResourceUsage represents resource utilization during the build

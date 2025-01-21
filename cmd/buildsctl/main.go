@@ -12,15 +12,18 @@ import (
 	"time"
 
 	buildv1 "builds/api/build"
+	"builds/internal/analysis/performance"
+	"builds/internal/models"
+	"builds/internal/reporters"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+	grpcutil "builds/internal/utils/grpcutil"
 )
 
 var (
-	serverAddr = flag.String("server", "localhost:8080", "The server address")
-	format     = flag.String("format", "text", "Output format (text, json)")
+	serverAddr = flag.String("server", "localhost:50051", "The server address")
+	format     = flag.String("format", "display", "Output format (display, text, json)")
 	watch      = flag.Bool("watch", false, "Watch for new builds")
+	useTLS     = flag.Bool("tls", false, "Use TLS when connecting to server")
 	version    = flag.Bool("version", false, "Show version information")
 )
 
@@ -34,7 +37,7 @@ func main() {
 		return
 	}
 
-	conn, err := grpc.NewClient(*serverAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpcutil.CreateGRPCConnection(*serverAddr, *useTLS)
 	if err != nil {
 		log.Fatalf("Failed to connect: %v", err)
 	}
@@ -85,10 +88,33 @@ func getBuild(ctx context.Context, client buildv1.BuildServiceClient, id string)
 		log.Fatalf("Failed to get build: %v", err)
 	}
 
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	defer w.Flush()
+	// Convert proto build to internal model
+	modelBuild := convertProtoToModel(build)
 
-	printBuildDetails(w, build)
+	// Run analysis
+	analyzer := performance.NewAnalyzer(modelBuild)
+	analysisResult, err := analyzer.Analyze()
+	if err != nil {
+		log.Printf("Warning: analysis failed: %v", err)
+	}
+
+	// Create reporter options
+	opts := reporters.Options{
+		Format:   *format,
+		Build:    modelBuild,
+		Analysis: analysisResult,
+		Writer:   os.Stdout,
+	}
+
+	// Create and use reporter
+	reporter, err := reporters.NewReporter(opts)
+	if err != nil {
+		log.Fatalf("Failed to create reporter: %v", err)
+	}
+
+	if err := reporter.Generate(); err != nil {
+		log.Fatalf("Failed to generate report: %v", err)
+	}
 }
 
 func listBuilds(ctx context.Context, client buildv1.BuildServiceClient) {
@@ -158,8 +184,29 @@ func watchBuilds(client buildv1.BuildServiceClient) {
 			log.Fatalf("Stream error: %v", err)
 		}
 
-		printBuildDetails(w, build)
-		fmt.Println("\n---")
+		status := "Failed"
+		if build.Success {
+			status = "Success"
+		}
+
+		compilerName := "unknown"
+		if build.Compiler != nil {
+			compilerName = build.Compiler.Name
+		}
+
+		startTime := "N/A"
+		if build.StartTime != nil {
+			startTime = build.StartTime.AsTime().Format(time.RFC3339)
+		}
+
+		fmt.Fprintf(w, "%s\t%s\t%s\t%.2fs\t%s\n",
+			build.Id,
+			status,
+			startTime,
+			build.Duration,
+			compilerName,
+		)
+		w.Flush()
 	}
 }
 
@@ -185,30 +232,197 @@ Examples:
 `, os.Args[0], os.Args[0])
 }
 
-func formatBytes(bytes int64) string {
-	const unit = 1024
-	if bytes < unit {
-		return fmt.Sprintf("%d B", bytes)
+func convertProtoToModel(pb *buildv1.Build) *models.Build {
+	build := &models.Build{
+		ID:        pb.Id,
+		StartTime: pb.StartTime.AsTime(),
+		EndTime:   pb.EndTime.AsTime(),
+		Duration:  pb.Duration,
+		Success:   pb.Success,
+		Error:     pb.Error,
 	}
-	div, exp := int64(unit), 0
-	for n := bytes / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %ciB", float64(bytes)/float64(div), "KMGTPE"[exp])
-}
 
-func formatDuration(d float64) string {
-	duration := time.Duration(d * float64(time.Second))
-	if duration < time.Second {
-		return fmt.Sprintf("%dms", duration.Milliseconds())
+	// Convert Environment
+	if pb.Environment != nil {
+		build.Environment = models.Environment{
+			OS:         pb.Environment.Os,
+			Arch:       pb.Environment.Arch,
+			WorkingDir: pb.Environment.WorkingDir,
+			Variables:  pb.Environment.Variables, // This is already map[string]string
+		}
 	}
-	return duration.Round(time.Millisecond).String()
-}
 
-func formatBool(b bool) string {
-	if b {
-		return "Yes"
+	// Convert Hardware
+	if pb.Hardware != nil {
+		build.Hardware = models.Hardware{
+			CPU: models.CPU{
+				Model:     pb.Hardware.Cpu.Model,
+				Frequency: pb.Hardware.Cpu.Frequency,
+				Cores:     pb.Hardware.Cpu.Cores,
+				Threads:   pb.Hardware.Cpu.Threads,
+				Vendor:    pb.Hardware.Cpu.Vendor,
+				CacheSize: pb.Hardware.Cpu.CacheSize,
+			},
+			Memory: models.Memory{
+				Total:     pb.Hardware.Memory.Total,
+				Available: pb.Hardware.Memory.Available,
+				Used:      pb.Hardware.Memory.Used,
+				SwapTotal: pb.Hardware.Memory.SwapTotal,
+				SwapFree:  pb.Hardware.Memory.SwapFree,
+			},
+			GPUs: make([]models.GPU, len(pb.Hardware.Gpus)),
+		}
+
+		for i, gpu := range pb.Hardware.Gpus {
+			build.Hardware.GPUs[i] = models.GPU{
+				Model:       gpu.Model,
+				Memory:      gpu.Memory,
+				Driver:      gpu.Driver,
+				ComputeCaps: gpu.ComputeCaps,
+			}
+		}
 	}
-	return "No"
+
+	// Convert Compiler
+	if pb.Compiler != nil {
+		build.Compiler = models.Compiler{
+			Name:          pb.Compiler.Name,
+			Version:       pb.Compiler.Version,
+			Target:        pb.Compiler.Target,
+			Options:       pb.Compiler.Options,
+			Optimizations: pb.Compiler.Optimizations,
+			Flags:         pb.Compiler.Flags,
+			Language: models.Language{
+				Name:          pb.Compiler.Language.Name,
+				Version:       pb.Compiler.Language.Version,
+				Specification: pb.Compiler.Language.Specification,
+			},
+			Extensions: pb.Compiler.Features.Extensions,
+			Features: models.CompilerFeatures{
+				SupportsOpenMP: pb.Compiler.Features.SupportsOpenmp,
+				SupportsGPU:    pb.Compiler.Features.SupportsGpu,
+				SupportsLTO:    pb.Compiler.Features.SupportsLto,
+				SupportsPGO:    pb.Compiler.Features.SupportsPgo,
+				Extensions:     pb.Compiler.Features.Extensions,
+			},
+		}
+	}
+
+	// Convert Command
+	if pb.Command != nil {
+		build.Command = models.Command{
+			Executable: pb.Command.Executable,
+			Arguments:  pb.Command.Arguments,
+			WorkingDir: pb.Command.WorkingDir,
+			Env:        pb.Command.Env,
+		}
+	}
+
+	// Convert Output
+	if pb.Output != nil {
+		build.Output = models.Output{
+			Stdout:    pb.Output.Stdout,
+			Stderr:    pb.Output.Stderr,
+			ExitCode:  pb.Output.ExitCode,
+			Warnings:  pb.Output.Warnings,
+			Errors:    pb.Output.Errors,
+			Artifacts: make([]models.Artifact, len(pb.Output.Artifacts)),
+		}
+		for i, art := range pb.Output.Artifacts {
+			build.Output.Artifacts[i] = models.Artifact{
+				Path: art.Path,
+				Type: art.Type,
+				Size: art.Size,
+				Hash: art.Hash,
+			}
+		}
+	}
+
+	// Convert Resource Usage
+	if pb.ResourceUsage != nil {
+		build.ResourceUsage = models.ResourceUsage{
+			MaxMemory: pb.ResourceUsage.MaxMemory,
+			CPUTime:   pb.ResourceUsage.CpuTime,
+			Threads:   pb.ResourceUsage.Threads,
+			IO: models.IOStats{
+				ReadBytes:  pb.ResourceUsage.Io.ReadBytes,
+				WriteBytes: pb.ResourceUsage.Io.WriteBytes,
+				ReadCount:  pb.ResourceUsage.Io.ReadCount,
+				WriteCount: pb.ResourceUsage.Io.WriteCount,
+			},
+		}
+	}
+
+	// Convert Performance
+	if pb.Performance != nil {
+		build.Performance = models.Performance{
+			CompileTime:  pb.Performance.CompileTime,
+			LinkTime:     pb.Performance.LinkTime,
+			OptimizeTime: pb.Performance.OptimizeTime,
+			Phases:       pb.Performance.Phases,
+		}
+	}
+
+	// Convert Remarks
+	remarks := make([]models.CompilerRemark, 0, len(pb.Remarks))
+	for _, remark := range pb.Remarks {
+		modelRemark := models.CompilerRemark{
+			ID:        remark.Id,
+			Type:      models.RemarkType(remark.Type.String()),
+			Pass:      models.PassType(remark.Pass.String()),
+			Status:    models.RemarkStatus(remark.Status.String()),
+			Message:   remark.Message,
+			Function:  remark.Function,
+			Timestamp: remark.Timestamp.AsTime(),
+			Location: models.Location{
+				File:     remark.Location.File,
+				Line:     remark.Location.Line,
+				Column:   remark.Location.Column,
+				Function: remark.Location.Function,
+				Region:   remark.Location.Region,
+				Artifact: remark.Location.Artifact,
+			},
+		}
+
+		if remark.KernelInfo != nil {
+			modelRemark.KernelInfo = &models.KernelInfo{
+				ThreadLimit:              remark.KernelInfo.ThreadLimit,
+				MaxThreadsX:              remark.KernelInfo.MaxThreadsX,
+				MaxThreadsY:              remark.KernelInfo.MaxThreadsY,
+				MaxThreadsZ:              remark.KernelInfo.MaxThreadsZ,
+				SharedMemory:             remark.KernelInfo.SharedMemory,
+				Target:                   remark.KernelInfo.Target,
+				DirectCalls:              remark.KernelInfo.DirectCalls,
+				IndirectCalls:            remark.KernelInfo.IndirectCalls,
+				Callees:                  remark.KernelInfo.Callees,
+				AllocasCount:             remark.KernelInfo.AllocasCount,
+				AllocasStaticSize:        remark.KernelInfo.AllocasStaticSize,
+				AllocasDynamicCount:      remark.KernelInfo.AllocasDynamicCount,
+				FlatAddressSpaceAccesses: remark.KernelInfo.FlatAddressSpaceAccesses,
+				InlineAssemblyCalls:      remark.KernelInfo.InlineAssemblyCalls,
+				Metrics:                  remark.KernelInfo.Metrics,
+				Attributes:               remark.KernelInfo.Attributes,
+				MemoryAccesses:           make([]models.MemoryAccess, len(remark.KernelInfo.MemoryAccesses)),
+			}
+
+			for i, acc := range remark.KernelInfo.MemoryAccesses {
+				modelRemark.KernelInfo.MemoryAccesses[i] = models.MemoryAccess{
+					Type:          acc.Type,
+					AddressSpace:  acc.AddressSpace,
+					Instruction:   acc.Instruction,
+					Variable:      acc.Variable,
+					AccessPattern: acc.AccessPattern,
+				}
+			}
+		}
+
+		if remark.Metadata != nil {
+			modelRemark.Metadata = remark.Metadata.AsMap()
+		}
+
+		remarks = append(remarks, modelRemark)
+	}
+	build.Remarks = remarks
+
+	return build
 }

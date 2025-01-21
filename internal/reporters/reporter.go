@@ -5,7 +5,9 @@ import (
 	"builds/internal/analysis/performance"
 	"builds/internal/models"
 	"builds/internal/reporters/json"
+	"builds/internal/reporters/stdout"
 	"builds/internal/reporters/text"
+	"io"
 )
 
 // Reporter defines the interface for build report generators
@@ -19,6 +21,7 @@ type Options struct {
 	Format    string
 	Build     *models.Build
 	Analysis  *performance.AnalysisResult
+	Writer    io.Writer
 }
 
 // NewReporter creates a new reporter based on the specified format
@@ -26,9 +29,11 @@ func NewReporter(opts Options) (Reporter, error) {
 	switch opts.Format {
 	case "json":
 		return json.NewReporter(opts.Build, opts.Analysis, opts.OutputDir), nil
-	case "txt":
+	case "text":
 		return text.NewReporter(opts.Build, opts.Analysis, opts.OutputDir), nil
+	case "display", "stdout":
+		return stdout.NewReporter(opts.Build, opts.Analysis, opts.Writer), nil
 	default:
-		return text.NewReporter(opts.Build, opts.Analysis, opts.OutputDir), nil
+		return stdout.NewReporter(opts.Build, opts.Analysis, opts.Writer), nil
 	}
 }

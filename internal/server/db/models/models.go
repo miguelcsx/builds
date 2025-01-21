@@ -3,28 +3,29 @@
 package db
 
 import (
+	"database/sql/driver"
+	"encoding/json"
+	"fmt"
 	"time"
 )
 
 type Build struct {
-	ID        string `gorm:"primarykey"`
-	StartTime time.Time
-	EndTime   time.Time
-	Duration  float64
-	Success   bool
-	Error     string
-
-	Environment     Environment      `gorm:"foreignKey:BuildID"`
-	Hardware        Hardware         `gorm:"foreignKey:BuildID"`
-	Compiler        Compiler         `gorm:"foreignKey:BuildID"`
-	Command         Command          `gorm:"foreignKey:BuildID"`
-	Output          Output           `gorm:"foreignKey:BuildID"`
-	ResourceUsage   ResourceUsage    `gorm:"foreignKey:BuildID"`
-	Performance     Performance      `gorm:"foreignKey:BuildID"`
-	CompilerRemarks []CompilerRemark `gorm:"foreignKey:BuildID"`
-
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID            string `gorm:"primarykey"`
+	StartTime     time.Time
+	EndTime       time.Time
+	Duration      float64
+	Success       bool
+	Error         string
+	Environment   Environment      `gorm:"foreignKey:BuildID"`
+	Hardware      Hardware         `gorm:"foreignKey:BuildID"`
+	Compiler      Compiler         `gorm:"foreignKey:BuildID"`
+	Command       Command          `gorm:"foreignKey:BuildID"`
+	Output        Output           `gorm:"foreignKey:BuildID"`
+	ResourceUsage ResourceUsage    `gorm:"foreignKey:BuildID"`
+	Performance   Performance      `gorm:"foreignKey:BuildID"`
+	Remarks       []CompilerRemark `gorm:"foreignKey:BuildID"`
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 type Environment struct {
@@ -130,24 +131,58 @@ type Artifact struct {
 }
 
 type CompilerRemark struct {
-	ID       uint `gorm:"primarykey"`
-	BuildID  string
-	Type     string
-	Pass     string
-	Message  string
-	Function string
+	ID         uint `gorm:"primarykey"`
+	BuildID    string
+	Type       string // Using string type for the enum
+	Pass       string // Using string type for the enum
+	Status     string // Using string type for the enum
+	Message    string `gorm:"type:text"`
+	Function   string
+	Timestamp  time.Time
+	Location   Location    `gorm:"embedded;embeddedPrefix:location_"`
+	KernelInfo *KernelInfo `gorm:"foreignKey:RemarkID"`
+	Metadata   JSON        `gorm:"type:jsonb"` // Using JSONB for metadata
+}
+
+type Location struct {
 	File     string
 	Line     int32
 	Column   int32
-	Args     []RemarkArg `gorm:"foreignKey:RemarkID"`
+	Function string
+	Region   string
+	Artifact bool
 }
 
-type RemarkArg struct {
-	ID        uint `gorm:"primarykey"`
-	RemarkID  uint
-	StringVal string
-	Callee    string
-	Reason    string
+type KernelInfo struct {
+	ID                       uint `gorm:"primarykey"`
+	RemarkID                 uint
+	ThreadLimit              int32
+	MaxThreadsX              int32
+	MaxThreadsY              int32
+	MaxThreadsZ              int32
+	SharedMemory             int64
+	Target                   string
+	DirectCalls              int32
+	IndirectCalls            int32
+	Callees                  StringArray `gorm:"type:text[]"`
+	AllocasCount             int32
+	AllocasStaticSize        int64
+	AllocasDynamicCount      int32
+	FlatAddressSpaceAccesses int32
+	InlineAssemblyCalls      int32
+	Metrics                  JSON           `gorm:"type:jsonb"`
+	Attributes               JSON           `gorm:"type:jsonb"`
+	MemoryAccesses           []MemoryAccess `gorm:"foreignKey:KernelInfoID"`
+}
+
+type MemoryAccess struct {
+	ID            uint `gorm:"primarykey"`
+	KernelInfoID  uint
+	Type          string
+	AddressSpace  string
+	Instruction   string
+	Variable      string
+	AccessPattern string
 }
 
 type ResourceUsage struct {
@@ -173,4 +208,44 @@ type PerformancePhase struct {
 	BuildID  string `gorm:"primarykey"`
 	Phase    string `gorm:"primarykey"`
 	Duration float64
+}
+
+// Custom types for handling arrays and JSON
+type StringArray []string
+
+func (a StringArray) Value() (driver.Value, error) {
+	return json.Marshal(a)
+}
+
+func (a *StringArray) Scan(value interface{}) error {
+	if value == nil {
+		*a = nil
+		return nil
+	}
+	return json.Unmarshal(value.([]byte), a)
+}
+
+type JSON map[string]interface{}
+
+func (j JSON) Value() (driver.Value, error) {
+	if j == nil {
+		return nil, nil
+	}
+	return json.Marshal(j)
+}
+
+func (j *JSON) Scan(value interface{}) error {
+	if value == nil {
+		*j = nil
+		return nil
+	}
+
+	switch v := value.(type) {
+	case []byte:
+		return json.Unmarshal(v, j)
+	case string:
+		return json.Unmarshal([]byte(v), j)
+	default:
+		return fmt.Errorf("unsupported type: %T", value)
+	}
 }

@@ -2,7 +2,6 @@
 package performance
 
 import (
-	"strconv"
 	"strings"
 
 	"builds/internal/models"
@@ -87,14 +86,8 @@ func (a *Analyzer) calculateWastedMemory() int64 {
 	// Check for large allocations in compiler remarks
 	for _, remark := range a.build.Remarks {
 		if strings.Contains(remark.Message, "alloca") {
-			// Look for memory size in remark args
-			for _, arg := range remark.Args {
-				if arg.String != "" {
-					if size, err := strconv.ParseInt(arg.String, 10, 64); err == nil {
-						wastedMemory += size
-					}
-				}
-			}
+			// Add static allocation size to wasted memory
+			wastedMemory += remark.KernelInfo.AllocasStaticSize
 		}
 	}
 

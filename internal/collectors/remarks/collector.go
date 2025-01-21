@@ -34,7 +34,6 @@ func (c *Collector) Initialize(ctx context.Context) error {
 
 // Collect gathers compiler remarks from stdout
 func (c *Collector) Collect(ctx context.Context) error {
-	// Create command with all optimization remarks enabled
 	args := append([]string{
 		"-O2",
 		"-Rpass=.*",
@@ -44,7 +43,6 @@ func (c *Collector) Collect(ctx context.Context) error {
 
 	cmd := exec.CommandContext(ctx, c.buildContext.Compiler, args...)
 
-	// Capture stdout and stderr
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		return fmt.Errorf("getting stderr pipe: %w", err)
@@ -54,11 +52,10 @@ func (c *Collector) Collect(ctx context.Context) error {
 		return fmt.Errorf("starting compilation: %w", err)
 	}
 
-	// Parse remarks from stderr
 	parser := remarks.NewParser(stderr)
 	remarks, err := parser.Parse()
 	if err != nil {
-		cmd.Wait() // Wait for command to finish before returning error
+		cmd.Wait()
 		return fmt.Errorf("parsing remarks: %w", err)
 	}
 
@@ -81,7 +78,7 @@ func (c *Collector) Cleanup(ctx context.Context) error {
 }
 
 // FilterRemarksByPass filters remarks by pass name
-func (c *Collector) FilterRemarksByPass(pass string) []models.CompilerRemark {
+func (c *Collector) FilterRemarksByPass(pass models.PassType) []models.CompilerRemark {
 	var filtered []models.CompilerRemark
 	for _, remark := range c.remarks {
 		if remark.Pass == pass {
@@ -92,7 +89,7 @@ func (c *Collector) FilterRemarksByPass(pass string) []models.CompilerRemark {
 }
 
 // FilterRemarksByType filters remarks by type
-func (c *Collector) FilterRemarksByType(remarkType string) []models.CompilerRemark {
+func (c *Collector) FilterRemarksByType(remarkType models.RemarkType) []models.CompilerRemark {
 	var filtered []models.CompilerRemark
 	for _, remark := range c.remarks {
 		if remark.Type == remarkType {
@@ -106,12 +103,12 @@ func (c *Collector) FilterRemarksByType(remarkType string) []models.CompilerRema
 func (c *Collector) GetOptimizationSummary() map[string]int {
 	summary := make(map[string]int)
 	for _, remark := range c.remarks {
-		switch remark.Type {
-		case "Passed":
+		switch remark.Status {
+		case models.RemarkStatusPassed:
 			summary["passed"]++
-		case "Missed":
+		case models.RemarkStatusMissed:
 			summary["missed"]++
-		case "Analysis":
+		case models.RemarkStatusAnalysis:
 			summary["analysis"]++
 		}
 	}
@@ -133,10 +130,9 @@ func (c *Collector) GetOptimizationsByFunction() map[string][]models.CompilerRem
 func (c *Collector) GetRemarksWithReason(reason string) []models.CompilerRemark {
 	var filtered []models.CompilerRemark
 	for _, remark := range c.remarks {
-		for _, arg := range remark.Args {
-			if arg.Reason == reason {
+		if meta, ok := remark.Metadata["reason"]; ok {
+			if r, ok := meta.(string); ok && r == reason {
 				filtered = append(filtered, remark)
-				break
 			}
 		}
 	}

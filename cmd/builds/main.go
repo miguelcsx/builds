@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -12,8 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	buildv1 "builds/api/build"
@@ -24,10 +24,12 @@ import (
 	"builds/internal/collectors/remarks"
 	"builds/internal/collectors/resource"
 	"builds/internal/models"
+	grpcutil "builds/internal/utils/grpcutil"
 )
 
 var (
-	serverAddr = flag.String("server", "localhost:8080", "The server address")
+	serverAddr = flag.String("server", "localhost:50051", "The server address") // Changed from 8080 to 50051
+	useTLS     = flag.Bool("tls", false, "Use TLS when connecting to server")
 	verbose    = flag.Bool("verbose", false, "Enable verbose output")
 	version    = flag.Bool("version", false, "Show version information")
 )
@@ -129,7 +131,7 @@ func main() {
 	build.Duration = endTime.Sub(startTime).Seconds()
 
 	// Connect to the server
-	conn, err := grpc.Dial(*serverAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpcutil.CreateGRPCConnection(*serverAddr, *useTLS)
 	if err != nil {
 		log.Fatalf("Failed to connect: %v", err)
 	}
@@ -244,17 +246,103 @@ func convertResourceUsage(res models.ResourceUsage) *buildv1.ResourceUsage {
 func convertRemarks(remarks []models.CompilerRemark) []*buildv1.CompilerRemark {
 	pbRemarks := make([]*buildv1.CompilerRemark, len(remarks))
 	for i, remark := range remarks {
-		pbRemarks[i] = &buildv1.CompilerRemark{
-			Type:     remark.Type,
-			Pass:     remark.Pass,
+		pbRemark := &buildv1.CompilerRemark{
+			Id:       remark.ID,
 			Message:  remark.Message,
 			Function: remark.Function,
 			Location: &buildv1.Location{
-				File:   remark.Location.File,
-				Line:   remark.Location.Line,
-				Column: remark.Location.Column,
+				File:     remark.Location.File,
+				Line:     remark.Location.Line,
+				Column:   remark.Location.Column,
+				Function: remark.Location.Function,
+				Region:   remark.Location.Region,
+				Artifact: remark.Location.Artifact,
 			},
+			Timestamp: timestamppb.New(remark.Timestamp),
 		}
+
+		// Convert enums
+		switch remark.Type {
+		case models.RemarkTypeOptimization:
+			pbRemark.Type = buildv1.CompilerRemark_OPTIMIZATION
+		case models.RemarkTypeKernel:
+			pbRemark.Type = buildv1.CompilerRemark_KERNEL
+		case models.RemarkTypeAnalysis:
+			pbRemark.Type = buildv1.CompilerRemark_ANALYSIS
+		case models.RemarkTypeMetric:
+			pbRemark.Type = buildv1.CompilerRemark_METRIC
+		case models.RemarkTypeInfo:
+			pbRemark.Type = buildv1.CompilerRemark_INFO
+		}
+
+		switch remark.Pass {
+		case models.PassTypeVectorization:
+			pbRemark.Pass = buildv1.CompilerRemark_VECTORIZATION
+		case models.PassTypeInlining:
+			pbRemark.Pass = buildv1.CompilerRemark_INLINING
+		case models.PassTypeKernelInfo:
+			pbRemark.Pass = buildv1.CompilerRemark_KERNEL_INFO
+		case models.PassTypeSizeInfo:
+			pbRemark.Pass = buildv1.CompilerRemark_SIZE_INFO
+		case models.PassTypeAnalysis:
+			pbRemark.Pass = buildv1.CompilerRemark_PASS_ANALYSIS
+		}
+
+		switch remark.Status {
+		case models.RemarkStatusPassed:
+			pbRemark.Status = buildv1.CompilerRemark_PASSED
+		case models.RemarkStatusMissed:
+			pbRemark.Status = buildv1.CompilerRemark_MISSED
+		case models.RemarkStatusAnalysis:
+			pbRemark.Status = buildv1.CompilerRemark_STATUS_ANALYSIS
+		}
+
+		// Convert kernel info if present
+		if remark.KernelInfo != nil {
+			memAccesses := make([]*buildv1.MemoryAccess, len(remark.KernelInfo.MemoryAccesses))
+			for j, acc := range remark.KernelInfo.MemoryAccesses {
+				memAccesses[j] = &buildv1.MemoryAccess{
+					Type:          acc.Type,
+					AddressSpace:  acc.AddressSpace,
+					Instruction:   acc.Instruction,
+					Variable:      acc.Variable,
+					AccessPattern: acc.AccessPattern,
+				}
+			}
+
+			pbRemark.KernelInfo = &buildv1.KernelInfo{
+				ThreadLimit:              remark.KernelInfo.ThreadLimit,
+				MaxThreadsX:              remark.KernelInfo.MaxThreadsX,
+				MaxThreadsY:              remark.KernelInfo.MaxThreadsY,
+				MaxThreadsZ:              remark.KernelInfo.MaxThreadsZ,
+				SharedMemory:             remark.KernelInfo.SharedMemory,
+				Target:                   remark.KernelInfo.Target,
+				DirectCalls:              remark.KernelInfo.DirectCalls,
+				IndirectCalls:            remark.KernelInfo.IndirectCalls,
+				Callees:                  remark.KernelInfo.Callees,
+				AllocasCount:             remark.KernelInfo.AllocasCount,
+				AllocasStaticSize:        remark.KernelInfo.AllocasStaticSize,
+				AllocasDynamicCount:      remark.KernelInfo.AllocasDynamicCount,
+				FlatAddressSpaceAccesses: remark.KernelInfo.FlatAddressSpaceAccesses,
+				InlineAssemblyCalls:      remark.KernelInfo.InlineAssemblyCalls,
+				MemoryAccesses:           memAccesses,
+				Metrics:                  remark.KernelInfo.Metrics,
+				Attributes:               remark.KernelInfo.Attributes,
+			}
+		}
+
+		// Convert metadata to structpb
+		if len(remark.Metadata) > 0 {
+			metadataJSON, err := json.Marshal(remark.Metadata)
+			if err == nil {
+				metadataStruct := &structpb.Struct{}
+				if err := metadataStruct.UnmarshalJSON(metadataJSON); err == nil {
+					pbRemark.Metadata = metadataStruct
+				}
+			}
+		}
+
+		pbRemarks[i] = pbRemark
 	}
 	return pbRemarks
 }

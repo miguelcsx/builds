@@ -5,6 +5,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"time"
 
@@ -94,32 +95,27 @@ func (s *Server) CreateBuild(ctx context.Context, req *buildv1.CreateBuildReques
 		// Create compiler remarks
 		if len(req.Build.Remarks) > 0 {
 			for _, remark := range req.Build.Remarks {
-				compilerRemark := models.CompilerRemark{
-					BuildID:  build.ID,
-					Type:     remark.Type,
-					Pass:     remark.Pass,
-					Message:  remark.Message,
-					Function: remark.Function,
-					File:     remark.Location.File,
-					Line:     remark.Location.Line,
-					Column:   remark.Location.Column,
+				dbRemark := createCompilerRemark(*build, remark)
+
+				if err := tx.Create(dbRemark).Error; err != nil {
+					return fmt.Errorf("failed to create remark: %w", err)
 				}
 
-				if err := tx.Create(&compilerRemark).Error; err != nil {
-					return err
-				}
+				if dbRemark.KernelInfo != nil {
+					dbRemark.KernelInfo.RemarkID = dbRemark.ID
 
-				// Create remark arguments
-				for _, arg := range remark.Args {
-					remarkArg := models.RemarkArg{
-						RemarkID:  compilerRemark.ID,
-						StringVal: arg.StringVal,
-						Callee:    arg.Callee,
-						Reason:    arg.Reason,
+					if err := tx.Create(dbRemark.KernelInfo).Error; err != nil {
+						return fmt.Errorf("failed to create kernel info: %w", err)
 					}
 
-					if err := tx.Create(&remarkArg).Error; err != nil {
-						return err
+					if len(dbRemark.KernelInfo.MemoryAccesses) > 0 {
+						for i := range dbRemark.KernelInfo.MemoryAccesses {
+							dbRemark.KernelInfo.MemoryAccesses[i].KernelInfoID = dbRemark.KernelInfo.ID
+						}
+
+						if err := tx.Create(&dbRemark.KernelInfo.MemoryAccesses).Error; err != nil {
+							return fmt.Errorf("failed to create memory accesses: %w", err)
+						}
 					}
 				}
 			}
@@ -142,7 +138,9 @@ func (s *Server) CreateBuild(ctx context.Context, req *buildv1.CreateBuildReques
 		Preload("Compiler.Extensions").
 		Preload("Command.Arguments").
 		Preload("Output.Artifacts").
-		Preload("CompilerRemarks.Args").
+		Preload("Remarks").
+		Preload("Remarks.KernelInfo").
+		Preload("Remarks.KernelInfo.MemoryAccesses").
 		Preload("ResourceUsage").
 		Preload("Performance.Phases").
 		First(&completeBuild, "id = ?", build.ID).Error
@@ -155,21 +153,7 @@ func (s *Server) CreateBuild(ctx context.Context, req *buildv1.CreateBuildReques
 }
 
 func (s *Server) GetBuild(ctx context.Context, req *buildv1.GetBuildRequest) (*buildv1.Build, error) {
-	var build models.Build
-
-	err := s.db.DB.
-		Preload("Environment.Variables").
-		Preload("Hardware.GPUs").
-		Preload("Compiler.Options").
-		Preload("Compiler.Optimizations").
-		Preload("Compiler.Extensions").
-		Preload("Command.Arguments").
-		Preload("Output.Artifacts").
-		Preload("CompilerRemarks.Args").
-		Preload("ResourceUsage").
-		Preload("Performance.Phases").
-		First(&build, "id = ?", req.Id).Error
-
+	build, err := s.db.GetBuildByID(req.Id)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, status.Error(codes.NotFound, "build not found")
@@ -177,7 +161,7 @@ func (s *Server) GetBuild(ctx context.Context, req *buildv1.GetBuildRequest) (*b
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 
-	return s.convertBuildToProto(&build), nil
+	return s.convertBuildToProto(build), nil
 }
 
 func (s *Server) ListBuilds(ctx context.Context, req *buildv1.ListBuildsRequest) (*buildv1.ListBuildsResponse, error) {
@@ -395,8 +379,6 @@ func (s *Server) createResourceUsage(tx *gorm.DB, buildID string, usage *buildv1
 	return tx.Create(dbUsage).Error
 }
 
-// internal/server/api/server.go
-
 func (s *Server) convertBuildToProto(build *models.Build) *buildv1.Build {
 	pb := &buildv1.Build{
 		Id:        build.ID,
@@ -480,15 +462,14 @@ func (s *Server) convertBuildToProto(build *models.Build) *buildv1.Build {
 			OptimizeTime: build.Performance.OptimizeTime,
 			Phases:       make(map[string]float64),
 		},
-		Remarks: make([]*buildv1.CompilerRemark, 0),
+		Remarks: make([]*buildv1.CompilerRemark, len(build.Remarks)),
 	}
 
-	// Add environment variables
+	// Convert relationships
 	for _, v := range build.Environment.Variables {
 		pb.Environment.Variables[v.Key] = v.Value
 	}
 
-	// Add GPUs
 	for _, gpu := range build.Hardware.GPUs {
 		pb.Hardware.Gpus = append(pb.Hardware.Gpus, &buildv1.GPU{
 			Model:       gpu.Model,
@@ -498,27 +479,22 @@ func (s *Server) convertBuildToProto(build *models.Build) *buildv1.Build {
 		})
 	}
 
-	// Add compiler options
 	for _, opt := range build.Compiler.Options {
 		pb.Compiler.Options = append(pb.Compiler.Options, opt.Option)
 	}
 
-	// Add compiler optimizations
 	for _, opt := range build.Compiler.Optimizations {
 		pb.Compiler.Optimizations[opt.Name] = opt.Enabled
 	}
 
-	// Add compiler extensions
 	for _, ext := range build.Compiler.Extensions {
 		pb.Compiler.Features.Extensions = append(pb.Compiler.Features.Extensions, ext.Extension)
 	}
 
-	// Add command arguments
 	for _, arg := range build.Command.Arguments {
 		pb.Command.Arguments = append(pb.Command.Arguments, arg.Argument)
 	}
 
-	// Add artifacts
 	for _, artifact := range build.Output.Artifacts {
 		pb.Output.Artifacts = append(pb.Output.Artifacts, &buildv1.Artifact{
 			Path: artifact.Path,
@@ -528,36 +504,13 @@ func (s *Server) convertBuildToProto(build *models.Build) *buildv1.Build {
 		})
 	}
 
-	// Add performance phases
 	for _, phase := range build.Performance.Phases {
 		pb.Performance.Phases[phase.Phase] = phase.Duration
 	}
 
-	// Add compiler remarks
-	for _, remark := range build.CompilerRemarks {
-		pbRemark := &buildv1.CompilerRemark{
-			Type:     remark.Type,
-			Pass:     remark.Pass,
-			Message:  remark.Message,
-			Function: remark.Function,
-			Location: &buildv1.Location{
-				File:     remark.File,
-				Line:     remark.Line,
-				Column:   remark.Column,
-				Function: remark.Function,
-			},
-			Args: make([]*buildv1.RemarkArg, 0),
-		}
-
-		for _, arg := range remark.Args {
-			pbRemark.Args = append(pbRemark.Args, &buildv1.RemarkArg{
-				StringVal: arg.StringVal,
-				Callee:    arg.Callee,
-				Reason:    arg.Reason,
-			})
-		}
-
-		pb.Remarks = append(pb.Remarks, pbRemark)
+	// Convert remarks using converter
+	for i, remark := range build.Remarks {
+		pb.Remarks[i] = remarkToProto(&remark)
 	}
 
 	return pb

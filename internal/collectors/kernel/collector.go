@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
-	"strconv"
 	"strings"
 
 	"builds/internal/models"
@@ -37,15 +36,12 @@ func (c *Collector) Initialize(ctx context.Context) error {
 
 // Collect gathers kernel information
 func (c *Collector) Collect(ctx context.Context) error {
-	// Check if kernel info pass is enabled in the compiler flags
 	if !c.hasKernelInfoPass() {
 		return fmt.Errorf("kernel info pass not enabled")
 	}
 
-	// Run compilation with kernel info pass
 	cmd := exec.CommandContext(ctx, c.buildContext.Compiler, c.buildContext.Args...)
 
-	// Capture stderr where kernel info remarks are written
 	stderrPipe, err := cmd.StderrPipe()
 	if err != nil {
 		return err
@@ -55,11 +51,10 @@ func (c *Collector) Collect(ctx context.Context) error {
 		return err
 	}
 
-	// Parse kernel info remarks from stderr
 	parser := kernelparser.NewParser(stderrPipe)
 	remarks, err := parser.Parse()
 	if err != nil {
-		cmd.Wait() // Wait for command to finish before returning error
+		cmd.Wait()
 		return err
 	}
 
@@ -98,17 +93,18 @@ func (c *Collector) getKernelStatistics() map[string]interface{} {
 	// Count different types of remarks
 	remarkTypes := make(map[string]int)
 	for _, remark := range c.remarks {
-		remarkTypes[remark.Type]++
+		remarkTypes[string(remark.Type)]++
 	}
 	stats["remarkTypes"] = remarkTypes
 
 	// Count memory access patterns
 	memoryAccesses := make(map[string]int)
 	for _, remark := range c.remarks {
-		// Look for memory access pattern in args
-		for _, arg := range remark.Args {
-			if arg.String != "" && strings.Contains(remark.Message, "memory") {
-				memoryAccesses[arg.String]++
+		if strings.Contains(remark.Message, "memory") {
+			if meta, ok := remark.Metadata["memory_access"]; ok {
+				if access, ok := meta.(string); ok {
+					memoryAccesses[access]++
+				}
 			}
 		}
 	}
@@ -117,9 +113,9 @@ func (c *Collector) getKernelStatistics() map[string]interface{} {
 	// Count function calls
 	functionCalls := make(map[string]int)
 	for _, remark := range c.remarks {
-		for _, arg := range remark.Args {
-			if arg.Callee != "" {
-				functionCalls[arg.Callee]++
+		if meta, ok := remark.Metadata["callee"]; ok {
+			if callee, ok := meta.(string); ok {
+				functionCalls[callee]++
 			}
 		}
 	}
@@ -128,8 +124,8 @@ func (c *Collector) getKernelStatistics() map[string]interface{} {
 	return stats
 }
 
-// FilterRemarksByType returns remarks of a specific type
-func (c *Collector) FilterRemarksByType(remarkType string) []models.CompilerRemark {
+// FilterRemarksByType returns remarks filtered by type
+func (c *Collector) FilterRemarksByType(remarkType models.RemarkType) []models.CompilerRemark {
 	var filtered []models.CompilerRemark
 	for _, remark := range c.remarks {
 		if remark.Type == remarkType {
@@ -169,32 +165,18 @@ func (c *Collector) GetKernelMetrics() map[string]map[string]int {
 		}
 
 		switch remark.Type {
-		case "function_call":
-			// Look for direct call count in args
-			for _, arg := range remark.Args {
-				if arg.String != "" {
-					if val, err := strconv.Atoi(arg.String); err == nil {
-						metrics[remark.Function]["directCalls"] = val
-					}
-				}
+		case models.RemarkTypeKernel:
+			if info := remark.KernelInfo; info != nil {
+				metrics[remark.Function]["directCalls"] = int(info.DirectCalls)
+				metrics[remark.Function]["flatAddressSpaceAccesses"] = int(info.FlatAddressSpaceAccesses)
+				metrics[remark.Function]["allocasCount"] = int(info.AllocasCount)
 			}
-		case "memory":
-			// Look for allocation information in args
-			for _, arg := range remark.Args {
-				if arg.String != "" && strings.Contains(remark.Message, "alloca") {
-					if val, err := strconv.Atoi(arg.String); err == nil {
-						metrics[remark.Function]["allocas"] = val
-					}
-				}
-			}
-		case "memory_access":
-			// Look for flat memory access information
-			for _, arg := range remark.Args {
-				if arg.String != "" && strings.Contains(arg.String, "flat") {
-					if val, err := strconv.Atoi(arg.String); err == nil {
-						metrics[remark.Function]["flatAddrspaceAccesses"] = val
-					}
-				}
+		}
+
+		// Add any other metrics from metadata
+		if meta, ok := remark.Metadata["metrics"].(map[string]int); ok {
+			for k, v := range meta {
+				metrics[remark.Function][k] = v
 			}
 		}
 	}

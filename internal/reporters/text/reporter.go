@@ -40,7 +40,11 @@ func (r *Reporter) Generate() error {
 	defer file.Close()
 
 	w := tabwriter.NewWriter(file, 0, 0, 2, ' ', 0)
+	return r.GenerateToWriter(w)
 
+}
+
+func (r *Reporter) GenerateToWriter(w *tabwriter.Writer) error {
 	// Build Summary
 	fmt.Fprintf(w, "Build Report\n")
 	fmt.Fprintf(w, "============\n\n")
@@ -231,7 +235,7 @@ func (r *Reporter) Generate() error {
 		fmt.Fprintf(w, "\nCompiler Remarks:\n")
 		remarksByType := make(map[string]int)
 		for _, remark := range r.build.Remarks {
-			remarksByType[remark.Type]++
+			remarksByType[string(remark.Type)]++
 		}
 		for remarkType, count := range remarksByType {
 			fmt.Fprintf(w, "  %s:\t%d remarks\n", remarkType, count)

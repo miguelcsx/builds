@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"builds/internal/models"
 )
@@ -46,7 +47,7 @@ func (p *Parser) Parse() ([]models.CompilerRemark, error) {
 		line = strings.TrimPrefix(line, "remark: ")
 		remark, err := p.parseLine(line)
 		if err != nil {
-			continue // Skip malformed remarks
+			continue
 		}
 
 		remarks = append(remarks, remark)
@@ -55,13 +56,13 @@ func (p *Parser) Parse() ([]models.CompilerRemark, error) {
 	// Add accumulated metrics as separate remarks
 	for metric, value := range p.metrics {
 		remarks = append(remarks, models.CompilerRemark{
-			Type:    "metric",
+			Type:    models.RemarkTypeMetric,
+			Pass:    models.PassTypeKernelInfo,
 			Message: metric,
-			Args: []models.RemarkArg{
-				{
-					String: strconv.Itoa(value),
-				},
+			Metadata: map[string]interface{}{
+				"value": value,
 			},
+			Timestamp: time.Now(),
 		})
 	}
 
@@ -70,6 +71,10 @@ func (p *Parser) Parse() ([]models.CompilerRemark, error) {
 
 func (p *Parser) parseLine(line string) (models.CompilerRemark, error) {
 	var remark models.CompilerRemark
+	remark.Timestamp = time.Now()
+	remark.Type = models.RemarkTypeKernel
+	remark.Pass = models.PassTypeKernelInfo
+	remark.Status = models.RemarkStatusAnalysis
 
 	// Parse location and function info
 	locMatches := locationRegex.FindStringSubmatch(line)
@@ -79,6 +84,7 @@ func (p *Parser) parseLine(line string) (models.CompilerRemark, error) {
 			Line:     int32(parseInt(locMatches[2])),
 			Column:   int32(parseInt(locMatches[3])),
 			Function: strings.Trim(locMatches[4], "'"),
+			Artifact: true,
 		}
 		p.currentFunc = remark.Location.Function
 		line = line[len(locMatches[0]):]
@@ -88,41 +94,45 @@ func (p *Parser) parseLine(line string) (models.CompilerRemark, error) {
 	line = strings.TrimSpace(line)
 	remark.Message = line
 
+	// Initialize kernel info if not present
+	if remark.KernelInfo == nil {
+		remark.KernelInfo = &models.KernelInfo{
+			Metrics:    make(map[string]int64),
+			Attributes: make(map[string]string),
+			Callees:    make([]string, 0),
+		}
+	}
+
 	// Parse different types of remarks
 	if metricMatches := metricsRegex.FindStringSubmatch(line); metricMatches != nil {
-		remark.Type = "metric"
-		remark.Message = metricMatches[1]
-		p.metrics[metricMatches[1]] = parseInt(metricMatches[2])
-		remark.Args = []models.RemarkArg{
-			{
-				String: metricMatches[2],
-			},
+		metricName := metricMatches[1]
+		value := parseInt(metricMatches[2])
+		remark.KernelInfo.Metrics[metricName] = int64(value)
+
+		switch metricName {
+		case "DirectCalls":
+			remark.KernelInfo.DirectCalls = int32(value)
+		case "IndirectCalls":
+			remark.KernelInfo.IndirectCalls = int32(value)
+		case "FlatAddressSpaceAccesses":
+			remark.KernelInfo.FlatAddressSpaceAccesses = int32(value)
+		case "AllocasCount":
+			remark.KernelInfo.AllocasCount = int32(value)
+		case "AllocasStaticSize":
+			remark.KernelInfo.AllocasStaticSize = int64(value)
 		}
+
 	} else if callMatches := callRegex.FindStringSubmatch(line); callMatches != nil {
-		remark.Type = "function_call"
-		remark.Args = []models.RemarkArg{
-			{
-				Callee: callMatches[1],
-			},
-		}
+		remark.KernelInfo.DirectCalls++
+		remark.KernelInfo.Callees = append(remark.KernelInfo.Callees, callMatches[1])
+
 	} else if memMatches := memoryRegex.FindStringSubmatch(line); memMatches != nil {
-		remark.Type = "memory_access"
-		remark.Args = []models.RemarkArg{
-			{
-				String: memMatches[1], // instruction
-			},
-		}
-		if memMatches[2] != "" {
-			remark.Args = append(remark.Args, models.RemarkArg{
-				String: memMatches[2], // value
-			})
-		}
-		remark.Args = append(remark.Args, models.RemarkArg{
-			Reason: memMatches[3], // access type
+		remark.KernelInfo.MemoryAccesses = append(remark.KernelInfo.MemoryAccesses, models.MemoryAccess{
+			Type:         memMatches[1],
+			Instruction:  memMatches[2],
+			AddressSpace: memMatches[3],
 		})
-	} else {
-		// Default to info type for unrecognized remarks
-		remark.Type = "info"
+		remark.KernelInfo.FlatAddressSpaceAccesses++
 	}
 
 	return remark, nil

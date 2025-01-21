@@ -5,6 +5,7 @@ package build.v1;
 option go_package = "builds/api/build";
 
 import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
 
 message Build {
   string id = 1;
@@ -111,12 +112,41 @@ message Artifact {
 }
 
 message CompilerRemark {
-  string type = 1;
-  string pass = 2;
-  string message = 3;
-  Location location = 4;
-  string function = 5;
-  repeated RemarkArg args = 6;
+  enum Type {
+    TYPE_UNSPECIFIED = 0;
+    OPTIMIZATION = 1;
+    KERNEL = 2;
+    ANALYSIS = 3;
+    METRIC = 4;
+    INFO = 5;
+  }
+
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    PASSED = 1;
+    MISSED = 2;
+    STATUS_ANALYSIS = 3;
+  }
+
+  enum Pass {
+    PASS_UNSPECIFIED = 0;
+    VECTORIZATION = 1;
+    INLINING = 2;
+    KERNEL_INFO = 3;
+    SIZE_INFO = 4;
+    PASS_ANALYSIS = 5;
+  }
+
+  string id = 1;
+  Type type = 2;
+  Pass pass = 3;
+  Status status = 4;
+  string message = 5;
+  string function = 6;
+  google.protobuf.Timestamp timestamp = 7;
+  Location location = 8;
+  KernelInfo kernel_info = 9;
+  google.protobuf.Struct metadata = 10;
 }
 
 message Location {
@@ -124,13 +154,36 @@ message Location {
   int32 line = 2;
   int32 column = 3;
   string function = 4;
+  string region = 5;
+  bool artifact = 6;
 }
 
-message RemarkArg {
-  string string_val = 1;
-  string callee = 2;
-  Location location = 3;
-  string reason = 4;
+message KernelInfo {
+  int32 thread_limit = 1;
+  int32 max_threads_x = 2;
+  int32 max_threads_y = 3;
+  int32 max_threads_z = 4;
+  int64 shared_memory = 5;
+  string target = 6;
+  repeated MemoryAccess memory_accesses = 7;
+  int32 direct_calls = 8;
+  int32 indirect_calls = 9;
+  repeated string callees = 10;
+  int32 allocas_count = 11;
+  int64 allocas_static_size = 12;
+  int32 allocas_dynamic_count = 13;
+  int32 flat_address_space_accesses = 14;
+  int32 inline_assembly_calls = 15;
+  map<string, int64> metrics = 16;
+  map<string, string> attributes = 17;
+}
+
+message MemoryAccess {
+  string type = 1;
+  string address_space = 2;
+  string instruction = 3;
+  string variable = 4;
+  string access_pattern = 5;
 }
 
 message ResourceUsage {

@@ -9,12 +9,12 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"builds/internal/models"
 )
 
 var (
-	// Patterns for parsing different types of remarks
 	remarkRegex   = regexp.MustCompile(`remark: ([^:]+):(\d+):(\d+): (.+?) \[([-\w]+)\]$`)
 	passedRegex   = regexp.MustCompile(`'([^']+)' (inlined into) '([^']+)' with \(([^)]+)\):(.*?) at callsite ([^;]+);`)
 	missedRegex   = regexp.MustCompile(`([^:]+): (.+)`)
@@ -53,6 +53,8 @@ func (p *Parser) Parse() ([]models.CompilerRemark, error) {
 
 func (p *Parser) parseLine(line string) (models.CompilerRemark, error) {
 	var remark models.CompilerRemark
+	remark.Timestamp = time.Now()
+
 	matches := remarkRegex.FindStringSubmatch(line)
 	if len(matches) < 6 {
 		return remark, fmt.Errorf("invalid remark format")
@@ -68,63 +70,70 @@ func (p *Parser) parseLine(line string) (models.CompilerRemark, error) {
 
 	message := matches[4]
 	pass := matches[5]
-	remark.Pass = strings.TrimPrefix(pass, "Rpass")
-	remark.Pass = strings.TrimPrefix(remark.Pass, "Rpass-missed")
-	remark.Pass = strings.TrimPrefix(remark.Pass, "Rpass-analysis")
 	remark.Message = message
 
-	// Parse different remark types
+	// Parse pass type and remark type based on the pass string
 	if strings.Contains(pass, "inline") {
-		remark.Type = "Passed"
-		remark.Args = p.parseInlineRemark(message)
+		remark.Type = models.RemarkTypeOptimization
+		remark.Pass = models.PassTypeInlining
+		remark.Status = models.RemarkStatusPassed
+		parseInlineRemark(&remark, message)
 	} else if strings.Contains(pass, "missed") {
-		remark.Type = "Missed"
-		remark.Args = p.parseMissedRemark(message)
-	} else {
-		remark.Type = "Analysis"
-		remark.Args = p.parseAnalysisRemark(message)
+		remark.Type = models.RemarkTypeOptimization
+		remark.Pass = models.PassTypeVectorization
+		remark.Status = models.RemarkStatusMissed
+		parseMissedRemark(&remark, message)
+	} else if strings.Contains(pass, "analysis") {
+		remark.Type = models.RemarkTypeAnalysis
+		remark.Pass = models.PassTypeAnalysis
+		remark.Status = models.RemarkStatusAnalysis
+		parseAnalysisRemark(&remark, message)
+	} else if strings.Contains(pass, "size-info") {
+		remark.Type = models.RemarkTypeMetric
+		remark.Pass = models.PassTypeSizeInfo
+		remark.Status = models.RemarkStatusAnalysis
 	}
 
 	return remark, nil
 }
 
-func (p *Parser) parseInlineRemark(message string) []models.RemarkArg {
+func parseInlineRemark(remark *models.CompilerRemark, message string) {
 	matches := passedRegex.FindStringSubmatch(message)
 	if len(matches) < 7 {
-		return nil
+		return
 	}
 
-	return []models.RemarkArg{
-		{Callee: matches[1]},
-		{String: matches[2]},
-		{String: matches[3]},
-		{String: matches[4]},
-		{Reason: matches[5]},
-		{String: matches[6]},
+	remark.Metadata = map[string]interface{}{
+		"callee":   matches[1],
+		"action":   matches[2],
+		"caller":   matches[3],
+		"params":   matches[4],
+		"reason":   matches[5],
+		"callsite": matches[6],
 	}
 }
 
-func (p *Parser) parseMissedRemark(message string) []models.RemarkArg {
+func parseMissedRemark(remark *models.CompilerRemark, message string) {
 	matches := missedRegex.FindStringSubmatch(message)
 	if len(matches) < 3 {
-		return nil
+		return
 	}
 
-	return []models.RemarkArg{
-		{String: matches[1]},
-		{Reason: matches[2]},
+	remark.Metadata = map[string]interface{}{
+		"optimization": matches[1],
+		"reason":       matches[2],
 	}
 }
 
-func (p *Parser) parseAnalysisRemark(message string) []models.RemarkArg {
+func parseAnalysisRemark(remark *models.CompilerRemark, message string) {
 	matches := analysisRegex.FindStringSubmatch(message)
 	if len(matches) < 3 {
-		return nil
+		return
 	}
 
-	return []models.RemarkArg{
-		{String: matches[1]},
-		{Reason: matches[2]},
+	remark.Metadata = map[string]interface{}{
+		"analysis": matches[1],
+		"result":   matches[2],
 	}
 }
 

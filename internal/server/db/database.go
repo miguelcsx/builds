@@ -32,7 +32,8 @@ func (d *Database) Migrate() error {
 		&models.Output{},
 		&models.Artifact{},
 		&models.CompilerRemark{},
-		&models.RemarkArg{},
+		&models.KernelInfo{},
+		&models.MemoryAccess{},
 		&models.ResourceUsage{},
 		&models.Performance{},
 		&models.PerformancePhase{},
@@ -60,7 +61,6 @@ func (d *Database) CreateBuildWithRelations(build *models.Build) error {
 				return fmt.Errorf("failed to create environment: %w", err)
 			}
 
-			// Create environment variables
 			if len(build.Environment.Variables) > 0 {
 				if err := tx.Create(&build.Environment.Variables).Error; err != nil {
 					return fmt.Errorf("failed to create environment variables: %w", err)
@@ -74,7 +74,6 @@ func (d *Database) CreateBuildWithRelations(build *models.Build) error {
 				return fmt.Errorf("failed to create hardware: %w", err)
 			}
 
-			// Create GPUs
 			if len(build.Hardware.GPUs) > 0 {
 				if err := tx.Create(&build.Hardware.GPUs).Error; err != nil {
 					return fmt.Errorf("failed to create GPUs: %w", err)
@@ -88,21 +87,18 @@ func (d *Database) CreateBuildWithRelations(build *models.Build) error {
 				return fmt.Errorf("failed to create compiler: %w", err)
 			}
 
-			// Create compiler options
 			if len(build.Compiler.Options) > 0 {
 				if err := tx.Create(&build.Compiler.Options).Error; err != nil {
 					return fmt.Errorf("failed to create compiler options: %w", err)
 				}
 			}
 
-			// Create compiler optimizations
 			if len(build.Compiler.Optimizations) > 0 {
 				if err := tx.Create(&build.Compiler.Optimizations).Error; err != nil {
 					return fmt.Errorf("failed to create compiler optimizations: %w", err)
 				}
 			}
 
-			// Create compiler extensions
 			if len(build.Compiler.Extensions) > 0 {
 				if err := tx.Create(&build.Compiler.Extensions).Error; err != nil {
 					return fmt.Errorf("failed to create compiler extensions: %w", err)
@@ -116,7 +112,6 @@ func (d *Database) CreateBuildWithRelations(build *models.Build) error {
 				return fmt.Errorf("failed to create command: %w", err)
 			}
 
-			// Create command arguments
 			if len(build.Command.Arguments) > 0 {
 				if err := tx.Create(&build.Command.Arguments).Error; err != nil {
 					return fmt.Errorf("failed to create command arguments: %w", err)
@@ -130,7 +125,6 @@ func (d *Database) CreateBuildWithRelations(build *models.Build) error {
 				return fmt.Errorf("failed to create output: %w", err)
 			}
 
-			// Create artifacts
 			if len(build.Output.Artifacts) > 0 {
 				if err := tx.Create(&build.Output.Artifacts).Error; err != nil {
 					return fmt.Errorf("failed to create artifacts: %w", err)
@@ -138,17 +132,33 @@ func (d *Database) CreateBuildWithRelations(build *models.Build) error {
 			}
 		}
 
-		// Create CompilerRemarks
-		if len(build.CompilerRemarks) > 0 {
-			for i := range build.CompilerRemarks {
-				if err := tx.Create(&build.CompilerRemarks[i]).Error; err != nil {
+		// Create Remarks
+		if len(build.Remarks) > 0 {
+			for _, remark := range build.Remarks {
+				// Set the build ID for the remark
+				remark.BuildID = build.ID
+
+				if err := tx.Create(&remark).Error; err != nil {
 					return fmt.Errorf("failed to create compiler remark: %w", err)
 				}
 
-				// Create remark arguments
-				if len(build.CompilerRemarks[i].Args) > 0 {
-					if err := tx.Create(&build.CompilerRemarks[i].Args).Error; err != nil {
-						return fmt.Errorf("failed to create remark arguments: %w", err)
+				// Create kernel info if present
+				if remark.KernelInfo != nil {
+					remark.KernelInfo.RemarkID = remark.ID
+
+					if err := tx.Create(remark.KernelInfo).Error; err != nil {
+						return fmt.Errorf("failed to create kernel info: %w", err)
+					}
+
+					// Create memory accesses
+					if len(remark.KernelInfo.MemoryAccesses) > 0 {
+						for i := range remark.KernelInfo.MemoryAccesses {
+							remark.KernelInfo.MemoryAccesses[i].KernelInfoID = remark.KernelInfo.ID
+						}
+
+						if err := tx.Create(&remark.KernelInfo.MemoryAccesses).Error; err != nil {
+							return fmt.Errorf("failed to create memory accesses: %w", err)
+						}
 					}
 				}
 			}
@@ -167,7 +177,6 @@ func (d *Database) CreateBuildWithRelations(build *models.Build) error {
 				return fmt.Errorf("failed to create performance: %w", err)
 			}
 
-			// Create performance phases
 			if len(build.Performance.Phases) > 0 {
 				if err := tx.Create(&build.Performance.Phases).Error; err != nil {
 					return fmt.Errorf("failed to create performance phases: %w", err)
@@ -182,7 +191,7 @@ func (d *Database) CreateBuildWithRelations(build *models.Build) error {
 func (d *Database) GetBuildByID(id string) (*models.Build, error) {
 	var build models.Build
 
-	err := d.DB.
+	result := d.DB.
 		Preload("Environment.Variables").
 		Preload("Hardware.GPUs").
 		Preload("Compiler.Options").
@@ -190,15 +199,26 @@ func (d *Database) GetBuildByID(id string) (*models.Build, error) {
 		Preload("Compiler.Extensions").
 		Preload("Command.Arguments").
 		Preload("Output.Artifacts").
-		Preload("CompilerRemarks.Args").
 		Preload("ResourceUsage").
+		Preload("Performance").
 		Preload("Performance.Phases").
-		First(&build, "id = ?", id).Error
+		First(&build, "id = ?", id)
 
-	if err != nil {
-		return nil, err
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to get build: %w", result.Error)
 	}
 
+	// Load remarks separately to handle potential empty remarks
+	var remarks []models.CompilerRemark
+	if err := d.DB.
+		Where("build_id = ?", build.ID).
+		Preload("KernelInfo").
+		Preload("KernelInfo.MemoryAccesses").
+		Find(&remarks).Error; err != nil {
+		return nil, fmt.Errorf("failed to load remarks: %w", err)
+	}
+
+	build.Remarks = remarks
 	return &build, nil
 }
 
@@ -216,14 +236,25 @@ func (d *Database) ListBuilds(pageSize int, lastID string) ([]models.Build, erro
 	}
 
 	err := query.
-		Limit(pageSize).
 		Preload("Environment").
 		Preload("Hardware").
 		Preload("Compiler").
+		Preload("ResourceUsage").
+		Limit(pageSize).
 		Find(&builds).Error
 
 	if err != nil {
 		return nil, err
+	}
+
+	// Load remarks separately for each build
+	for i := range builds {
+		if err := d.DB.
+			Where("build_id = ?", builds[i].ID).
+			Preload("KernelInfo").
+			Find(&builds[i].Remarks).Error; err != nil {
+			return nil, fmt.Errorf("failed to load remarks for build %s: %w", builds[i].ID, err)
+		}
 	}
 
 	return builds, nil
@@ -231,9 +262,21 @@ func (d *Database) ListBuilds(pageSize int, lastID string) ([]models.Build, erro
 
 func (d *Database) DeleteBuild(id string) error {
 	return d.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("id = ?", id).Delete(&models.Build{}).Error; err != nil {
+		// Delete related records first to maintain referential integrity
+		if err := tx.Where("build_id = ?", id).Delete(&models.CompilerRemark{}).Error; err != nil {
 			return err
 		}
+
+		// Delete the build
+		result := tx.Where("id = ?", id).Delete(&models.Build{})
+		if result.Error != nil {
+			return result.Error
+		}
+
+		if result.RowsAffected == 0 {
+			return gorm.ErrRecordNotFound
+		}
+
 		return nil
 	})
 }
@@ -247,6 +290,8 @@ func (d *Database) GetBuildsAfter(timestamp string) ([]models.Build, error) {
 		Preload("Environment").
 		Preload("Hardware").
 		Preload("Compiler").
+		Preload("Remarks").
+		Preload("Remarks.KernelInfo").
 		Find(&builds).Error
 
 	if err != nil {

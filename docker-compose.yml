@@ -12,6 +12,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - builds-network
 
   builds-server:
     build:
@@ -21,19 +23,39 @@ services:
       db:
         condition: service_healthy
     environment:
-      DB_HOST: db  # Docker service name for the database container
+      DB_HOST: db
       DB_USER: ${POSTGRES_USER}
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       DB_NAME: ${POSTGRES_DB}
       DATABASE_URL: ${DATABASE_URL}
     ports:
-      - "8080:50051"
+      - "50051:50051"
+    networks:
+      - builds-network
 
   builds-lb:
-    image: nginx:latest
+    image: nginx:mainline
+    volumes:
+      - ./docker/nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
       - builds-server
-    environment:
-      GRPC_SERVER: builds-server
     ports:
       - "80:80"
+    networks:
+      - builds-network
+
+  ngrok:
+    image: ngrok/ngrok:latest
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTH_TOKEN}
+    command: "http builds-lb:80"
+    ports:
+      - "4040:4040"
+    networks:
+      - builds-network
+    depends_on:
+      - builds-lb
+
+networks:
+  builds-network:
+    driver: bridge
