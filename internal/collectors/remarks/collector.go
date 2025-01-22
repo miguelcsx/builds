@@ -5,136 +5,124 @@ package remarks
 import (
 	"context"
 	"fmt"
-	"io"
+	"log"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
 
 	"builds/internal/models"
 	"builds/internal/parsers/remarks"
 )
 
-// Collector implements compiler remarks collection
 type Collector struct {
 	models.BaseCollector
 	buildContext *models.BuildContext
 	remarks      []models.CompilerRemark
-	stderr       io.Writer
+	yamlPath     string
+	mu           sync.Mutex
 }
 
-// NewCollector creates a new remarks collector
 func NewCollector(ctx *models.BuildContext) *Collector {
 	return &Collector{
 		buildContext: ctx,
 	}
 }
 
-// Initialize prepares the remarks collector
 func (c *Collector) Initialize(ctx context.Context) error {
+	log.Printf("Initializing remarks collector for build %s", c.buildContext.BuildID)
+	c.yamlPath = filepath.Join(os.TempDir(), fmt.Sprintf("remarks_%s.yml", c.buildContext.BuildID))
+	c.addCompilerFlags()
 	return nil
 }
 
-// Collect gathers compiler remarks from stdout
-func (c *Collector) Collect(ctx context.Context) error {
-	args := append([]string{
+func (c *Collector) addCompilerFlags() {
+	// Store original args for comparison
+	originalArgs := append([]string{}, c.buildContext.Args...)
+
+	// Add YAML output flags
+	optimFlags := []string{
+		"-fsave-optimization-record",
+		fmt.Sprintf("-foptimization-record-file=%s", c.yamlPath),
 		"-O2",
-		"-Rpass=.*",
-		"-Rpass-missed=.*",
-		"-Rpass-analysis=.*",
-	}, c.buildContext.Args...)
+	}
 
-	cmd := exec.CommandContext(ctx, c.buildContext.Compiler, args...)
+	// Remove any existing optimization flags
+	var cleanedArgs []string
+	for _, arg := range c.buildContext.Args {
+		if !c.isOptimizationFlag(arg) {
+			cleanedArgs = append(cleanedArgs, arg)
+		}
+	}
 
-	stderr, err := cmd.StderrPipe()
+	// Combine flags
+	c.buildContext.Args = append(optimFlags, cleanedArgs...)
+
+	log.Printf("Original args: %v", originalArgs)
+	log.Printf("Modified args: %v", c.buildContext.Args)
+}
+
+func (c *Collector) isOptimizationFlag(arg string) bool {
+	return strings.HasPrefix(arg, "-fsave-optimization-record") ||
+		strings.HasPrefix(arg, "-foptimization-record-file") ||
+		strings.HasPrefix(arg, "-O") ||
+		strings.HasPrefix(arg, "-Rpass")
+}
+
+func (c *Collector) Collect(ctx context.Context) error {
+	// Ensure YAML file cleanup
+	defer func() {
+		if err := c.Cleanup(ctx); err != nil {
+			log.Printf("Warning: failed to cleanup YAML file: %v", err)
+		}
+	}()
+
+	// Run compiler to generate YAML file
+	cmd := exec.CommandContext(ctx, c.buildContext.Compiler, c.buildContext.Args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		log.Printf("Compilation completed with status: %v", err)
+	}
+
+	// Check if YAML file exists
+	if _, err := os.Stat(c.yamlPath); err != nil {
+		return fmt.Errorf("optimization record file not created: %w", err)
+	}
+
+	// Parse the YAML file
+	parser := remarks.NewParser(c.yamlPath)
+	parsedRemarks, err := parser.Parse()
 	if err != nil {
-		return fmt.Errorf("getting stderr pipe: %w", err)
+		return fmt.Errorf("failed to parse remarks: %w", err)
 	}
 
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("starting compilation: %w", err)
+	// Update remarks with build ID
+	for i := range parsedRemarks {
+		parsedRemarks[i].ID = c.buildContext.BuildID
 	}
 
-	parser := remarks.NewParser(stderr)
-	remarks, err := parser.Parse()
-	if err != nil {
-		cmd.Wait()
-		return fmt.Errorf("parsing remarks: %w", err)
-	}
+	c.mu.Lock()
+	c.remarks = parsedRemarks
+	c.mu.Unlock()
 
-	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("compilation failed: %w", err)
-	}
-
-	c.remarks = remarks
+	log.Printf("Collected %d remarks", len(parsedRemarks))
 	return nil
 }
 
-// GetData returns the collected remarks
 func (c *Collector) GetData() interface{} {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.remarks
 }
 
-// Cleanup performs any necessary cleanup
 func (c *Collector) Cleanup(ctx context.Context) error {
+	if c.yamlPath != "" {
+		if err := os.Remove(c.yamlPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to cleanup remarks file: %w", err)
+		}
+	}
 	return nil
-}
-
-// FilterRemarksByPass filters remarks by pass name
-func (c *Collector) FilterRemarksByPass(pass models.PassType) []models.CompilerRemark {
-	var filtered []models.CompilerRemark
-	for _, remark := range c.remarks {
-		if remark.Pass == pass {
-			filtered = append(filtered, remark)
-		}
-	}
-	return filtered
-}
-
-// FilterRemarksByType filters remarks by type
-func (c *Collector) FilterRemarksByType(remarkType models.RemarkType) []models.CompilerRemark {
-	var filtered []models.CompilerRemark
-	for _, remark := range c.remarks {
-		if remark.Type == remarkType {
-			filtered = append(filtered, remark)
-		}
-	}
-	return filtered
-}
-
-// GetOptimizationSummary returns a summary of optimization remarks
-func (c *Collector) GetOptimizationSummary() map[string]int {
-	summary := make(map[string]int)
-	for _, remark := range c.remarks {
-		switch remark.Status {
-		case models.RemarkStatusPassed:
-			summary["passed"]++
-		case models.RemarkStatusMissed:
-			summary["missed"]++
-		case models.RemarkStatusAnalysis:
-			summary["analysis"]++
-		}
-	}
-	return summary
-}
-
-// GetOptimizationsByFunction returns optimization remarks grouped by function
-func (c *Collector) GetOptimizationsByFunction() map[string][]models.CompilerRemark {
-	byFunction := make(map[string][]models.CompilerRemark)
-	for _, remark := range c.remarks {
-		if remark.Function != "" {
-			byFunction[remark.Function] = append(byFunction[remark.Function], remark)
-		}
-	}
-	return byFunction
-}
-
-// GetRemarksWithReason returns remarks that have a specific reason
-func (c *Collector) GetRemarksWithReason(reason string) []models.CompilerRemark {
-	var filtered []models.CompilerRemark
-	for _, remark := range c.remarks {
-		if meta, ok := remark.Metadata["reason"]; ok {
-			if r, ok := meta.(string); ok && r == reason {
-				filtered = append(filtered, remark)
-			}
-		}
-	}
-	return filtered
 }

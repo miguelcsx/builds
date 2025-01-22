@@ -3,141 +3,216 @@
 package remarks
 
 import (
-	"bufio"
+	"bytes"
 	"fmt"
 	"io"
-	"regexp"
-	"strconv"
+	"os"
 	"strings"
 	"time"
 
 	"builds/internal/models"
-)
 
-var (
-	remarkRegex   = regexp.MustCompile(`remark: ([^:]+):(\d+):(\d+): (.+?) \[([-\w]+)\]$`)
-	passedRegex   = regexp.MustCompile(`'([^']+)' (inlined into) '([^']+)' with \(([^)]+)\):(.*?) at callsite ([^;]+);`)
-	missedRegex   = regexp.MustCompile(`([^:]+): (.+)`)
-	analysisRegex = regexp.MustCompile(`(.+): (.+)`)
+	"gopkg.in/yaml.v3"
 )
 
 type Parser struct {
-	reader io.Reader
+	filepath string
 }
 
-func NewParser(reader io.Reader) *Parser {
-	return &Parser{
-		reader: reader,
-	}
+type YamlRemark struct {
+	Pass     string        `yaml:"Pass"`
+	Name     string        `yaml:"Name"`
+	Function string        `yaml:"Function"`
+	DebugLoc *YamlLocation `yaml:"DebugLoc,omitempty"`
+	Args     []YamlArg     `yaml:"Args,omitempty"`
+	Hotness  int32         `yaml:"Hotness,omitempty"`
+}
+
+type YamlLocation struct {
+	File     string `yaml:"File"`
+	Line     int32  `yaml:"Line"`
+	Column   int32  `yaml:"Column"`
+	Function string `yaml:"Function,omitempty"`
+	Region   string `yaml:"Region,omitempty"`
+}
+
+type YamlArg struct {
+	String      string        `yaml:"String,omitempty"`
+	Callee      string        `yaml:"Callee,omitempty"`
+	Caller      string        `yaml:"Caller,omitempty"`
+	Type        string        `yaml:"Type,omitempty"`
+	Line        string        `yaml:"Line,omitempty"`
+	Column      string        `yaml:"Column,omitempty"`
+	DebugLoc    *YamlLocation `yaml:"DebugLoc,omitempty"`
+	OtherAccess *struct {
+		Type     string        `yaml:"type,omitempty"`
+		DebugLoc *YamlLocation `yaml:"DebugLoc,omitempty"`
+	} `yaml:"OtherAccess,omitempty"`
+	ClobberedBy *struct {
+		Type     string        `yaml:"type,omitempty"`
+		DebugLoc *YamlLocation `yaml:"DebugLoc,omitempty"`
+	} `yaml:"ClobberedBy,omitempty"`
+}
+
+func NewParser(filepath string) *Parser {
+	return &Parser{filepath: filepath}
 }
 
 func (p *Parser) Parse() ([]models.CompilerRemark, error) {
-	var remarks []models.CompilerRemark
-	scanner := bufio.NewScanner(p.reader)
+	data, err := os.ReadFile(p.filepath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file: %w", err)
+	}
 
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "remark: ") {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	var remarks []models.CompilerRemark
+
+	for {
+		var node yaml.Node
+		err := decoder.Decode(&node)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
 			continue
 		}
 
-		remark, err := p.parseLine(line)
-		if err != nil {
-			continue // Skip malformed remarks
+		if node.Kind != yaml.DocumentNode || len(node.Content) == 0 {
+			continue
 		}
+
+		root := node.Content[0]
+		var yamlRemark YamlRemark
+		if err := root.Decode(&yamlRemark); err != nil {
+			continue
+		}
+
+		// Extract the type from the tag (e.g., "!Passed" -> "Passed")
+		remarkType := strings.TrimPrefix(root.Tag, "!")
+		if remarkType == "" {
+			// Skip if no type tag found
+			continue
+		}
+
+		remark := models.CompilerRemark{
+			Type:      strings.ToLower(remarkType), // Convert to lowercase for consistency
+			Pass:      yamlRemark.Pass,
+			Message:   p.buildMessage(yamlRemark),
+			Function:  yamlRemark.Function,
+			Timestamp: time.Now(),
+			Hotness:   yamlRemark.Hotness,
+		}
+
+		// Set status based on type
+		switch remark.Type {
+		case "passed":
+			remark.Status = "passed"
+		case "missed":
+			remark.Status = "missed"
+		case "analysis":
+			remark.Status = "analysis"
+		default:
+			remark.Status = "info"
+		}
+
+		// Convert location
+		if yamlRemark.DebugLoc != nil {
+			remark.Location = models.Location{
+				File:     yamlRemark.DebugLoc.File,
+				Line:     yamlRemark.DebugLoc.Line,
+				Column:   yamlRemark.DebugLoc.Column,
+				Function: yamlRemark.DebugLoc.Function,
+				Region:   yamlRemark.DebugLoc.Region,
+			}
+		}
+
+		// Process arguments
+		if len(yamlRemark.Args) > 0 {
+			remark.Args = models.RemarkArgs{
+				Strings: make([]string, 0),
+				Values:  make(map[string]string),
+			}
+
+			for _, arg := range yamlRemark.Args {
+				if arg.String != "" {
+					remark.Args.Strings = append(remark.Args.Strings, arg.String)
+				}
+				if arg.Callee != "" {
+					remark.Args.Callee = arg.Callee
+				}
+				if arg.Caller != "" {
+					remark.Args.Caller = arg.Caller
+				}
+				if arg.Type != "" {
+					remark.Args.Type = arg.Type
+				}
+				if arg.Line != "" {
+					remark.Args.Line = arg.Line
+				}
+				if arg.Column != "" {
+					remark.Args.Column = arg.Column
+				}
+				if arg.DebugLoc != nil {
+					remark.Args.DebugLoc = &models.Location{
+						File:   arg.DebugLoc.File,
+						Line:   arg.DebugLoc.Line,
+						Column: arg.DebugLoc.Column,
+					}
+				}
+
+				// Handle OtherAccess and ClobberedBy
+				if arg.OtherAccess != nil {
+					remark.Args.OtherAccess = &models.RemarkAccess{
+						Type: arg.OtherAccess.Type,
+					}
+					if arg.OtherAccess.DebugLoc != nil {
+						remark.Args.OtherAccess.DebugLoc = &models.Location{
+							File:   arg.OtherAccess.DebugLoc.File,
+							Line:   arg.OtherAccess.DebugLoc.Line,
+							Column: arg.OtherAccess.DebugLoc.Column,
+						}
+					}
+				}
+
+				if arg.ClobberedBy != nil {
+					remark.Args.ClobberedBy = &models.RemarkAccess{
+						Type: arg.ClobberedBy.Type,
+					}
+					if arg.ClobberedBy.DebugLoc != nil {
+						remark.Args.ClobberedBy.DebugLoc = &models.Location{
+							File:   arg.ClobberedBy.DebugLoc.File,
+							Line:   arg.ClobberedBy.DebugLoc.Line,
+							Column: arg.ClobberedBy.DebugLoc.Column,
+						}
+					}
+				}
+			}
+		}
+
 		remarks = append(remarks, remark)
 	}
 
-	return remarks, scanner.Err()
+	return remarks, nil
 }
 
-func (p *Parser) parseLine(line string) (models.CompilerRemark, error) {
-	var remark models.CompilerRemark
-	remark.Timestamp = time.Now()
+func (p *Parser) buildMessage(remark YamlRemark) string {
+	var parts []string
 
-	matches := remarkRegex.FindStringSubmatch(line)
-	if len(matches) < 6 {
-		return remark, fmt.Errorf("invalid remark format")
+	// Start with pass and name
+	parts = append(parts, fmt.Sprintf("%s: %s", remark.Pass, remark.Name))
+
+	// Add arguments
+	for _, arg := range remark.Args {
+		if arg.String != "" {
+			parts = append(parts, arg.String)
+		}
+		if arg.Callee != "" && arg.Caller != "" {
+			parts = append(parts, fmt.Sprintf("%s -> %s", arg.Callee, arg.Caller))
+		}
+		if arg.Type != "" {
+			parts = append(parts, fmt.Sprintf("type: %s", arg.Type))
+		}
 	}
 
-	// Basic remark info
-	remark.Location = models.Location{
-		File:     matches[1],
-		Line:     int32(parseInt(matches[2])),
-		Column:   int32(parseInt(matches[3])),
-		Function: "",
-	}
-
-	message := matches[4]
-	pass := matches[5]
-	remark.Message = message
-
-	// Parse pass type and remark type based on the pass string
-	if strings.Contains(pass, "inline") {
-		remark.Type = models.RemarkTypeOptimization
-		remark.Pass = models.PassTypeInlining
-		remark.Status = models.RemarkStatusPassed
-		parseInlineRemark(&remark, message)
-	} else if strings.Contains(pass, "missed") {
-		remark.Type = models.RemarkTypeOptimization
-		remark.Pass = models.PassTypeVectorization
-		remark.Status = models.RemarkStatusMissed
-		parseMissedRemark(&remark, message)
-	} else if strings.Contains(pass, "analysis") {
-		remark.Type = models.RemarkTypeAnalysis
-		remark.Pass = models.PassTypeAnalysis
-		remark.Status = models.RemarkStatusAnalysis
-		parseAnalysisRemark(&remark, message)
-	} else if strings.Contains(pass, "size-info") {
-		remark.Type = models.RemarkTypeMetric
-		remark.Pass = models.PassTypeSizeInfo
-		remark.Status = models.RemarkStatusAnalysis
-	}
-
-	return remark, nil
-}
-
-func parseInlineRemark(remark *models.CompilerRemark, message string) {
-	matches := passedRegex.FindStringSubmatch(message)
-	if len(matches) < 7 {
-		return
-	}
-
-	remark.Metadata = map[string]interface{}{
-		"callee":   matches[1],
-		"action":   matches[2],
-		"caller":   matches[3],
-		"params":   matches[4],
-		"reason":   matches[5],
-		"callsite": matches[6],
-	}
-}
-
-func parseMissedRemark(remark *models.CompilerRemark, message string) {
-	matches := missedRegex.FindStringSubmatch(message)
-	if len(matches) < 3 {
-		return
-	}
-
-	remark.Metadata = map[string]interface{}{
-		"optimization": matches[1],
-		"reason":       matches[2],
-	}
-}
-
-func parseAnalysisRemark(remark *models.CompilerRemark, message string) {
-	matches := analysisRegex.FindStringSubmatch(message)
-	if len(matches) < 3 {
-		return
-	}
-
-	remark.Metadata = map[string]interface{}{
-		"analysis": matches[1],
-		"result":   matches[2],
-	}
-}
-
-func parseInt(s string) int {
-	val, _ := strconv.Atoi(s)
-	return val
+	return strings.Join(parts, " ")
 }

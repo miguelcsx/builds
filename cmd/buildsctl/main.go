@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -25,6 +26,7 @@ var (
 	watch      = flag.Bool("watch", false, "Watch for new builds")
 	useTLS     = flag.Bool("tls", false, "Use TLS when connecting to server")
 	version    = flag.Bool("version", false, "Show version information")
+	verbose    = flag.Bool("verbose", false, "Enable verbose output")
 )
 
 const buildVersion = "0.1.0"
@@ -74,6 +76,12 @@ func main() {
 			log.Fatal("Build ID required")
 		}
 		deleteBuild(ctx, client, args[1])
+
+	case "inspect":
+		if len(args) < 2 {
+			log.Fatal("Build ID required")
+		}
+		inspectBuild(ctx, client, args[1])
 
 	default:
 		fmt.Printf("Unknown command: %s\n", args[0])
@@ -217,6 +225,7 @@ Commands:
   get <build-id>    Get details of a specific build
   list              List all builds
   delete <build-id> Delete a build
+  inspect <build-id> Inspect a build in detail
 
 Options:
   -server string    The server address (default "localhost:50051")
@@ -233,14 +242,24 @@ Examples:
 }
 
 func convertProtoToModel(pb *buildv1.Build) *models.Build {
-	build := &models.Build{
-		ID:        pb.Id,
-		StartTime: pb.StartTime.AsTime(),
-		EndTime:   pb.EndTime.AsTime(),
-		Duration:  pb.Duration,
-		Success:   pb.Success,
-		Error:     pb.Error,
+	if pb == nil {
+		return nil
 	}
+
+	build := &models.Build{
+		ID:      pb.Id,
+		Success: pb.Success,
+		Error:   pb.Error,
+	}
+
+	// Handle timestamps safely
+	if pb.StartTime != nil {
+		build.StartTime = pb.StartTime.AsTime()
+	}
+	if pb.EndTime != nil {
+		build.EndTime = pb.EndTime.AsTime()
+	}
+	build.Duration = pb.Duration
 
 	// Convert Environment
 	if pb.Environment != nil {
@@ -248,12 +267,12 @@ func convertProtoToModel(pb *buildv1.Build) *models.Build {
 			OS:         pb.Environment.Os,
 			Arch:       pb.Environment.Arch,
 			WorkingDir: pb.Environment.WorkingDir,
-			Variables:  pb.Environment.Variables, // This is already map[string]string
+			Variables:  pb.Environment.Variables,
 		}
 	}
 
 	// Convert Hardware
-	if pb.Hardware != nil {
+	if pb.Hardware != nil && pb.Hardware.Cpu != nil && pb.Hardware.Memory != nil {
 		build.Hardware = models.Hardware{
 			CPU: models.CPU{
 				Model:     pb.Hardware.Cpu.Model,
@@ -270,159 +289,200 @@ func convertProtoToModel(pb *buildv1.Build) *models.Build {
 				SwapTotal: pb.Hardware.Memory.SwapTotal,
 				SwapFree:  pb.Hardware.Memory.SwapFree,
 			},
-			GPUs: make([]models.GPU, len(pb.Hardware.Gpus)),
 		}
 
-		for i, gpu := range pb.Hardware.Gpus {
-			build.Hardware.GPUs[i] = models.GPU{
-				Model:       gpu.Model,
-				Memory:      gpu.Memory,
-				Driver:      gpu.Driver,
-				ComputeCaps: gpu.ComputeCaps,
+		// Handle GPUs safely
+		if pb.Hardware.Gpus != nil {
+			build.Hardware.GPUs = make([]models.GPU, len(pb.Hardware.Gpus))
+			for i, gpu := range pb.Hardware.Gpus {
+				if gpu != nil {
+					build.Hardware.GPUs[i] = models.GPU{
+						Model:       gpu.Model,
+						Memory:      gpu.Memory,
+						Driver:      gpu.Driver,
+						ComputeCaps: gpu.ComputeCaps,
+					}
+				}
 			}
-		}
-	}
-
-	// Convert Compiler
-	if pb.Compiler != nil {
-		build.Compiler = models.Compiler{
-			Name:          pb.Compiler.Name,
-			Version:       pb.Compiler.Version,
-			Target:        pb.Compiler.Target,
-			Options:       pb.Compiler.Options,
-			Optimizations: pb.Compiler.Optimizations,
-			Flags:         pb.Compiler.Flags,
-			Language: models.Language{
-				Name:          pb.Compiler.Language.Name,
-				Version:       pb.Compiler.Language.Version,
-				Specification: pb.Compiler.Language.Specification,
-			},
-			Extensions: pb.Compiler.Features.Extensions,
-			Features: models.CompilerFeatures{
-				SupportsOpenMP: pb.Compiler.Features.SupportsOpenmp,
-				SupportsGPU:    pb.Compiler.Features.SupportsGpu,
-				SupportsLTO:    pb.Compiler.Features.SupportsLto,
-				SupportsPGO:    pb.Compiler.Features.SupportsPgo,
-				Extensions:     pb.Compiler.Features.Extensions,
-			},
-		}
-	}
-
-	// Convert Command
-	if pb.Command != nil {
-		build.Command = models.Command{
-			Executable: pb.Command.Executable,
-			Arguments:  pb.Command.Arguments,
-			WorkingDir: pb.Command.WorkingDir,
-			Env:        pb.Command.Env,
-		}
-	}
-
-	// Convert Output
-	if pb.Output != nil {
-		build.Output = models.Output{
-			Stdout:    pb.Output.Stdout,
-			Stderr:    pb.Output.Stderr,
-			ExitCode:  pb.Output.ExitCode,
-			Warnings:  pb.Output.Warnings,
-			Errors:    pb.Output.Errors,
-			Artifacts: make([]models.Artifact, len(pb.Output.Artifacts)),
-		}
-		for i, art := range pb.Output.Artifacts {
-			build.Output.Artifacts[i] = models.Artifact{
-				Path: art.Path,
-				Type: art.Type,
-				Size: art.Size,
-				Hash: art.Hash,
-			}
-		}
-	}
-
-	// Convert Resource Usage
-	if pb.ResourceUsage != nil {
-		build.ResourceUsage = models.ResourceUsage{
-			MaxMemory: pb.ResourceUsage.MaxMemory,
-			CPUTime:   pb.ResourceUsage.CpuTime,
-			Threads:   pb.ResourceUsage.Threads,
-			IO: models.IOStats{
-				ReadBytes:  pb.ResourceUsage.Io.ReadBytes,
-				WriteBytes: pb.ResourceUsage.Io.WriteBytes,
-				ReadCount:  pb.ResourceUsage.Io.ReadCount,
-				WriteCount: pb.ResourceUsage.Io.WriteCount,
-			},
-		}
-	}
-
-	// Convert Performance
-	if pb.Performance != nil {
-		build.Performance = models.Performance{
-			CompileTime:  pb.Performance.CompileTime,
-			LinkTime:     pb.Performance.LinkTime,
-			OptimizeTime: pb.Performance.OptimizeTime,
-			Phases:       pb.Performance.Phases,
 		}
 	}
 
 	// Convert Remarks
-	remarks := make([]models.CompilerRemark, 0, len(pb.Remarks))
-	for _, remark := range pb.Remarks {
-		modelRemark := models.CompilerRemark{
-			ID:        remark.Id,
-			Type:      models.RemarkType(remark.Type.String()),
-			Pass:      models.PassType(remark.Pass.String()),
-			Status:    models.RemarkStatus(remark.Status.String()),
-			Message:   remark.Message,
-			Function:  remark.Function,
-			Timestamp: remark.Timestamp.AsTime(),
-			Location: models.Location{
-				File:     remark.Location.File,
-				Line:     remark.Location.Line,
-				Column:   remark.Location.Column,
-				Function: remark.Location.Function,
-				Region:   remark.Location.Region,
-				Artifact: remark.Location.Artifact,
-			},
-		}
-
-		if remark.KernelInfo != nil {
-			modelRemark.KernelInfo = &models.KernelInfo{
-				ThreadLimit:              remark.KernelInfo.ThreadLimit,
-				MaxThreadsX:              remark.KernelInfo.MaxThreadsX,
-				MaxThreadsY:              remark.KernelInfo.MaxThreadsY,
-				MaxThreadsZ:              remark.KernelInfo.MaxThreadsZ,
-				SharedMemory:             remark.KernelInfo.SharedMemory,
-				Target:                   remark.KernelInfo.Target,
-				DirectCalls:              remark.KernelInfo.DirectCalls,
-				IndirectCalls:            remark.KernelInfo.IndirectCalls,
-				Callees:                  remark.KernelInfo.Callees,
-				AllocasCount:             remark.KernelInfo.AllocasCount,
-				AllocasStaticSize:        remark.KernelInfo.AllocasStaticSize,
-				AllocasDynamicCount:      remark.KernelInfo.AllocasDynamicCount,
-				FlatAddressSpaceAccesses: remark.KernelInfo.FlatAddressSpaceAccesses,
-				InlineAssemblyCalls:      remark.KernelInfo.InlineAssemblyCalls,
-				Metrics:                  remark.KernelInfo.Metrics,
-				Attributes:               remark.KernelInfo.Attributes,
-				MemoryAccesses:           make([]models.MemoryAccess, len(remark.KernelInfo.MemoryAccesses)),
+	if pb.Remarks != nil {
+		build.Remarks = make([]models.CompilerRemark, 0, len(pb.Remarks))
+		for _, remark := range pb.Remarks {
+			if remark == nil {
+				continue
 			}
 
-			for i, acc := range remark.KernelInfo.MemoryAccesses {
-				modelRemark.KernelInfo.MemoryAccesses[i] = models.MemoryAccess{
-					Type:          acc.Type,
-					AddressSpace:  acc.AddressSpace,
-					Instruction:   acc.Instruction,
-					Variable:      acc.Variable,
-					AccessPattern: acc.AccessPattern,
+			modelRemark := models.CompilerRemark{
+				Type:     strings.ToLower(remark.Type.String()),
+				Pass:     strings.ToLower(remark.Pass.String()),
+				Status:   strings.ToLower(remark.Status.String()),
+				Message:  remark.Message,
+				Function: remark.Function,
+				Hotness:  remark.Hotness,
+			}
+
+			if remark.Timestamp != nil {
+				modelRemark.Timestamp = remark.Timestamp.AsTime()
+			}
+
+			// Handle Location
+			if remark.Location != nil {
+				modelRemark.Location = models.Location{
+					File:     remark.Location.File,
+					Line:     remark.Location.Line,
+					Column:   remark.Location.Column,
+					Function: remark.Location.Function,
+					Region:   remark.Location.Region,
 				}
 			}
-		}
 
-		if remark.Metadata != nil {
-			modelRemark.Metadata = remark.Metadata.AsMap()
-		}
+			// Handle KernelInfo
+			if remark.KernelInfo != nil {
+				modelRemark.KernelInfo = &models.KernelInfo{
+					ThreadLimit:              remark.KernelInfo.ThreadLimit,
+					MaxThreadsX:              remark.KernelInfo.MaxThreadsX,
+					MaxThreadsY:              remark.KernelInfo.MaxThreadsY,
+					MaxThreadsZ:              remark.KernelInfo.MaxThreadsZ,
+					SharedMemory:             remark.KernelInfo.SharedMemory,
+					Target:                   remark.KernelInfo.Target,
+					DirectCalls:              remark.KernelInfo.DirectCalls,
+					IndirectCalls:            remark.KernelInfo.IndirectCalls,
+					Callees:                  remark.KernelInfo.Callees,
+					AllocasCount:             remark.KernelInfo.AllocasCount,
+					AllocasStaticSize:        remark.KernelInfo.AllocasStaticSize,
+					AllocasDynamicCount:      remark.KernelInfo.AllocasDynamicCount,
+					FlatAddressSpaceAccesses: remark.KernelInfo.FlatAddressSpaceAccesses,
+					InlineAssemblyCalls:      remark.KernelInfo.InlineAssemblyCalls,
+					Metrics:                  make(map[string]int64),
+					Attributes:               make(map[string]string),
+				}
 
-		remarks = append(remarks, modelRemark)
+				// Copy metrics
+				if remark.KernelInfo.Metrics != nil {
+					for k, v := range remark.KernelInfo.Metrics {
+						modelRemark.KernelInfo.Metrics[k] = v
+					}
+				}
+
+				// Copy attributes
+				if remark.KernelInfo.Attributes != nil {
+					for k, v := range remark.KernelInfo.Attributes {
+						modelRemark.KernelInfo.Attributes[k] = v
+					}
+				}
+
+				// Handle memory accesses
+				if remark.KernelInfo.MemoryAccesses != nil {
+					modelRemark.KernelInfo.MemoryAccesses = make([]models.MemoryAccess, len(remark.KernelInfo.MemoryAccesses))
+					for i, acc := range remark.KernelInfo.MemoryAccesses {
+						if acc != nil {
+							modelRemark.KernelInfo.MemoryAccesses[i] = models.MemoryAccess{
+								Type:          acc.Type,
+								AddressSpace:  acc.AddressSpace,
+								Instruction:   acc.Instruction,
+								Variable:      acc.Variable,
+								AccessPattern: acc.AccessPattern,
+							}
+						}
+					}
+				}
+			}
+
+			// Handle metadata
+			if remark.Metadata != nil {
+				modelRemark.Metadata = remark.Metadata.AsMap()
+			}
+
+			// Handle args
+			if remark.Args != nil {
+				modelRemark.Args.Strings = remark.Args.Strings
+				modelRemark.Args.Values = make(map[string]string)
+			}
+
+			build.Remarks = append(build.Remarks, modelRemark)
+		}
 	}
-	build.Remarks = remarks
 
 	return build
+}
+
+func inspectBuild(ctx context.Context, client buildv1.BuildServiceClient, id string) {
+	build, err := client.GetBuild(ctx, &buildv1.GetBuildRequest{Id: id})
+	if err != nil {
+		log.Fatalf("Failed to get build: %v", err)
+	}
+
+	// Create a detailed inspection report
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	defer w.Flush()
+
+	fmt.Fprintf(w, "Database Inspection for Build %s\n", build.Id)
+	fmt.Fprintf(w, "=================================\n\n")
+
+	// Main Build table
+	fmt.Fprintf(w, "Build Table:\n")
+	fmt.Fprintf(w, "  ID:\t%s\n", build.Id)
+	fmt.Fprintf(w, "  Success:\t%v\n", build.Success)
+	fmt.Fprintf(w, "  Duration:\t%.2f\n", build.Duration)
+	fmt.Fprintf(w, "\n")
+
+	// Remarks table
+	fmt.Fprintf(w, "Compiler Remarks (%d remarks):\n", len(build.Remarks))
+	if len(build.Remarks) > 0 {
+		fmt.Fprintf(w, "  ID\tType\tPass\tStatus\tMessage\tLocation\n")
+		fmt.Fprintf(w, "  --\t----\t----\t------\t-------\t--------\n")
+		for _, remark := range build.Remarks {
+			location := fmt.Sprintf("%s:%d:%d",
+				remark.Location.File,
+				remark.Location.Line,
+				remark.Location.Column)
+			fmt.Fprintf(w, "  %s\t%s\t%s\t%s\t%s\t%s\n",
+				remark.Id,
+				remark.Type,
+				remark.Pass,
+				remark.Status,
+				truncate(remark.Message, 30),
+				location)
+		}
+	} else {
+		fmt.Fprintf(w, "  No remarks found in database\n")
+	}
+	fmt.Fprintf(w, "\n")
+
+	// Show raw data if -verbose flag is set
+	if *verbose {
+		fmt.Fprintf(w, "Raw Remark Data:\n")
+		for i, remark := range build.Remarks {
+			fmt.Fprintf(w, "Remark %d:\n", i+1)
+			fmt.Fprintf(w, "  Message:\t%s\n", remark.Message)
+			fmt.Fprintf(w, "  Function:\t%s\n", remark.Function)
+			fmt.Fprintf(w, "  Location:\t%s:%d:%d\n",
+				remark.Location.File,
+				remark.Location.Line,
+				remark.Location.Column)
+			if remark.KernelInfo != nil {
+				fmt.Fprintf(w, "  Kernel Info:\n")
+				fmt.Fprintf(w, "    Thread Limit:\t%d\n", remark.KernelInfo.ThreadLimit)
+				fmt.Fprintf(w, "    Direct Calls:\t%d\n", remark.KernelInfo.DirectCalls)
+				fmt.Fprintf(w, "    Memory Accesses:\t%d\n", len(remark.KernelInfo.MemoryAccesses))
+			}
+			if remark.Metadata != nil {
+				fmt.Fprintf(w, "  Metadata:\n")
+				for k, v := range remark.Metadata.AsMap() {
+					fmt.Fprintf(w, "    %s:\t%v\n", k, v)
+				}
+			}
+			fmt.Fprintf(w, "\n")
+		}
+	}
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n-3] + "..."
 }

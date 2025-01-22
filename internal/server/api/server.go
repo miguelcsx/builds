@@ -43,11 +43,17 @@ func (s *Server) CreateBuild(ctx context.Context, req *buildv1.CreateBuildReques
 		Error:     req.Build.Error,
 	}
 
-	// Start a transaction
+	// Create remarks first to have their IDs available
+	var remarks []*models.CompilerRemark
+	for _, remark := range req.Build.Remarks {
+		dbRemark := createCompilerRemark(*build, remark)
+		remarks = append(remarks, dbRemark)
+	}
+
 	err := s.db.DB.Transaction(func(tx *gorm.DB) error {
 		// Create the build first
 		if err := tx.Create(build).Error; err != nil {
-			return err
+			return fmt.Errorf("failed to create build: %w", err)
 		}
 
 		// Create environment
@@ -92,30 +98,26 @@ func (s *Server) CreateBuild(ctx context.Context, req *buildv1.CreateBuildReques
 			}
 		}
 
-		// Create compiler remarks
-		if len(req.Build.Remarks) > 0 {
-			for _, remark := range req.Build.Remarks {
-				dbRemark := createCompilerRemark(*build, remark)
+		// Store remarks
+		for _, remark := range remarks {
+			if err := tx.Create(remark).Error; err != nil {
+				return fmt.Errorf("failed to create remark: %w", err)
+			}
 
-				if err := tx.Create(dbRemark).Error; err != nil {
-					return fmt.Errorf("failed to create remark: %w", err)
+			// Create kernel info if present
+			if remark.KernelInfo != nil {
+				remark.KernelInfo.RemarkID = remark.ID
+				if err := tx.Create(remark.KernelInfo).Error; err != nil {
+					return fmt.Errorf("failed to create kernel info: %w", err)
 				}
 
-				if dbRemark.KernelInfo != nil {
-					dbRemark.KernelInfo.RemarkID = dbRemark.ID
-
-					if err := tx.Create(dbRemark.KernelInfo).Error; err != nil {
-						return fmt.Errorf("failed to create kernel info: %w", err)
+				// Create memory accesses
+				if len(remark.KernelInfo.MemoryAccesses) > 0 {
+					for i := range remark.KernelInfo.MemoryAccesses {
+						remark.KernelInfo.MemoryAccesses[i].KernelInfoID = remark.KernelInfo.ID
 					}
-
-					if len(dbRemark.KernelInfo.MemoryAccesses) > 0 {
-						for i := range dbRemark.KernelInfo.MemoryAccesses {
-							dbRemark.KernelInfo.MemoryAccesses[i].KernelInfoID = dbRemark.KernelInfo.ID
-						}
-
-						if err := tx.Create(&dbRemark.KernelInfo.MemoryAccesses).Error; err != nil {
-							return fmt.Errorf("failed to create memory accesses: %w", err)
-						}
+					if err := tx.Create(&remark.KernelInfo.MemoryAccesses).Error; err != nil {
+						return fmt.Errorf("failed to create memory accesses: %w", err)
 					}
 				}
 			}
@@ -138,7 +140,9 @@ func (s *Server) CreateBuild(ctx context.Context, req *buildv1.CreateBuildReques
 		Preload("Compiler.Extensions").
 		Preload("Command.Arguments").
 		Preload("Output.Artifacts").
-		Preload("Remarks").
+		Preload("Remarks", func(db *gorm.DB) *gorm.DB {
+			return db.Order("compiler_remarks.id ASC")
+		}).
 		Preload("Remarks.KernelInfo").
 		Preload("Remarks.KernelInfo.MemoryAccesses").
 		Preload("ResourceUsage").

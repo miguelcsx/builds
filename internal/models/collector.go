@@ -40,6 +40,7 @@ type BuildContext struct {
 	Context    context.Context
 	BuildID    string
 	SourceFile string
+	Status     bool
 	OutputDir  string
 	Compiler   string
 	Args       []string

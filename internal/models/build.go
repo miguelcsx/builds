@@ -152,36 +152,57 @@ const (
 )
 
 // CompilerRemark represents a generic compiler remark/diagnostic
+// CompilerRemark represents a generic compiler remark/diagnostic
 type CompilerRemark struct {
-	ID        string       `json:"id"`
-	Type      RemarkType   `json:"type"`
-	Pass      PassType     `json:"pass"`
-	Status    RemarkStatus `json:"status"`
-	Message   string       `json:"message"`
-	Function  string       `json:"function"`
-	Timestamp time.Time    `json:"timestamp"`
+	ID        string    `json:"id"`
+	Type      string    `json:"type"`    // YAML tag type (Passed, Missed, Analysis, etc)
+	Pass      string    `json:"pass"`    // Compiler pass name
+	Status    string    `json:"status"`  // Status derived from type
+	Name      string    `json:"name"`    // Remark name from YAML
+	Message   string    `json:"message"` // Constructed message
+	Function  string    `json:"function"`
+	Timestamp time.Time `json:"timestamp"`
+	Location  Location  `json:"location"`
 
-	// Source location
-	Location Location `json:"location"`
+	// YAML-specific fields
+	Args       RemarkArgs  `json:"args,omitempty"`
+	Hotness    int32       `json:"hotness,omitempty"`
+	KernelInfo *KernelInfo `json:"kernel_info,omitempty"`
+	Metadata   JSON        `json:"metadata,omitempty"`
+}
 
-	// Kernel-specific information
-	KernelInfo *KernelInfo `json:"kernelInfo,omitempty"`
+// RemarkArgs represents structured arguments from YAML
+type RemarkArgs struct {
+	Strings     []string          `json:"strings,omitempty"`
+	Callee      string            `json:"callee,omitempty"`
+	Caller      string            `json:"caller,omitempty"`
+	Type        string            `json:"type,omitempty"`
+	Line        string            `json:"line,omitempty"`
+	Column      string            `json:"column,omitempty"`
+	Cost        string            `json:"cost,omitempty"`
+	Reason      string            `json:"reason,omitempty"`
+	DebugLoc    *Location         `json:"debug_loc,omitempty"`
+	OtherAccess *RemarkAccess     `json:"other_access,omitempty"`
+	ClobberedBy *RemarkAccess     `json:"clobbered_by,omitempty"`
+	Values      map[string]string `json:"values,omitempty"`
+}
 
-	Metadata map[string]interface{} `json:"metadata,omitempty"`
+type RemarkAccess struct {
+	Type     string    `json:"type"`
+	DebugLoc *Location `json:"debug_loc,omitempty"`
 }
 
 type Location struct {
-	File     string `json:"file"`
-	Line     int32  `json:"line"`
-	Column   int32  `json:"column"`
-	Function string `json:"function"`
-	Region   string `json:"region"`
-	Artifact bool   `json:"artifact"`
+	File     string `json:"file,omitempty"`
+	Line     int32  `json:"line,omitempty"`
+	Column   int32  `json:"column,omitempty"`
+	Function string `json:"function,omitempty"`
+	Region   string `json:"region,omitempty"`
+	Artifact string `json:"artifact,omitempty"`
 }
 
-// KernelInfo contains kernel-specific information
 type KernelInfo struct {
-	// Kernel characteristics
+	// Thread configuration
 	ThreadLimit  int32  `json:"thread_limit,omitempty"`
 	MaxThreadsX  int32  `json:"max_threads_x,omitempty"`
 	MaxThreadsY  int32  `json:"max_threads_y,omitempty"`
@@ -189,33 +210,42 @@ type KernelInfo struct {
 	SharedMemory int64  `json:"shared_memory,omitempty"`
 	Target       string `json:"target,omitempty"`
 
-	// Memory access patterns
-	MemoryAccesses []MemoryAccess `json:"memory_accesses,omitempty"`
-
-	// Function calls
+	// Functions and calls
 	DirectCalls   int32    `json:"direct_calls,omitempty"`
 	IndirectCalls int32    `json:"indirect_calls,omitempty"`
 	Callees       []string `json:"callees,omitempty"`
 
-	// Resource usage
+	// Memory management
 	AllocasCount        int32 `json:"allocas_count,omitempty"`
 	AllocasStaticSize   int64 `json:"allocas_static_size,omitempty"`
 	AllocasDynamicCount int32 `json:"allocas_dynamic_count,omitempty"`
 
-	// Other metrics
-	FlatAddressSpaceAccesses int32             `json:"flat_address_space_accesses,omitempty"`
-	InlineAssemblyCalls      int32             `json:"inline_assembly_calls,omitempty"`
-	Metrics                  map[string]int64  `json:"metrics,omitempty"`
-	Attributes               map[string]string `json:"attributes,omitempty"`
+	// Advanced metrics
+	FlatAddressSpaceAccesses int32 `json:"flat_address_space_accesses,omitempty"`
+	InlineAssemblyCalls      int32 `json:"inline_assembly_calls,omitempty"`
+	NumStackBytes            int64 `json:"num_stack_bytes,omitempty"`
+	NumInstructions          int32 `json:"num_instructions,omitempty"`
+
+	// Complex data
+	MemoryAccesses []MemoryAccess    `json:"memory_accesses,omitempty"`
+	BasicBlocks    []BasicBlock      `json:"basic_blocks,omitempty"`
+	Metrics        map[string]int64  `json:"metrics,omitempty"`
+	Attributes     map[string]string `json:"attributes,omitempty"`
 }
 
-// MemoryAccess represents a memory access pattern in kernel code
+type BasicBlock struct {
+	Name         string   `json:"name"`
+	Instructions int32    `json:"instructions"`
+	Location     Location `json:"location,omitempty"`
+}
+
 type MemoryAccess struct {
-	Type          string `json:"type"`           // load, store, atomic, etc.
-	AddressSpace  string `json:"address_space"`  // flat, shared, global, etc.
-	Instruction   string `json:"instruction"`    // LLVM IR instruction
-	Variable      string `json:"variable"`       // Variable being accessed
-	AccessPattern string `json:"access_pattern"` // Sequential, strided, etc.
+	Type          string   `json:"type"`          // load, store, atomic
+	AddressSpace  string   `json:"address_space"` // flat, shared, global
+	Instruction   string   `json:"instruction,omitempty"`
+	Variable      string   `json:"variable,omitempty"`
+	AccessPattern string   `json:"access_pattern,omitempty"`
+	Location      Location `json:"location,omitempty"`
 }
 
 // ResourceUsage represents resource utilization during the build
@@ -251,3 +281,5 @@ type BuildMetrics struct {
 	OutputSize     int64              `json:"outputSize"`
 	Metrics        map[string]float64 `json:"metrics"`
 }
+
+type JSON map[string]interface{}

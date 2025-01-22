@@ -5,6 +5,7 @@ package db
 import (
 	models "builds/internal/server/db/models"
 	"fmt"
+	"strings"
 
 	"gorm.io/gorm"
 )
@@ -18,27 +19,38 @@ func New(db *gorm.DB) *Database {
 }
 
 func (d *Database) Migrate() error {
+	// The order is important here due to foreign key constraints
 	modelsList := []interface{}{
+		// Core models
 		&models.Build{},
 		&models.Environment{},
 		&models.EnvironmentVariable{},
 		&models.Hardware{},
 		&models.GPU{},
 		&models.Compiler{},
+		&models.CompilerOption{},
 		&models.CompilerOptimization{},
 		&models.CompilerExtension{},
 		&models.Command{},
 		&models.CommandArgument{},
 		&models.Output{},
 		&models.Artifact{},
-		&models.CompilerRemark{},
-		&models.KernelInfo{},
-		&models.MemoryAccess{},
 		&models.ResourceUsage{},
 		&models.Performance{},
 		&models.PerformancePhase{},
+
+		// Remarks and related models
+		&models.CompilerRemark{},
+		&models.KernelInfo{},
+		&models.MemoryAccess{},
 	}
 
+	// Create custom types first
+	if err := d.createCustomTypes(); err != nil {
+		return fmt.Errorf("failed to create custom types: %w", err)
+	}
+
+	// Migrate models
 	for _, model := range modelsList {
 		if err := d.DB.AutoMigrate(model); err != nil {
 			return fmt.Errorf("failed to migrate %T: %w", model, err)
@@ -299,4 +311,82 @@ func (d *Database) GetBuildsAfter(timestamp string) ([]models.Build, error) {
 	}
 
 	return builds, nil
+}
+
+func (d *Database) createCustomTypes() error {
+	// Create enums if needed
+	type enumInfo struct {
+		name       string
+		values     []string
+		defaultVal string
+	}
+
+	enums := []enumInfo{
+		{
+			name:       "remark_type",
+			values:     []string{"optimization", "kernel", "analysis", "metric", "info"},
+			defaultVal: "info",
+		},
+		{
+			name:       "remark_pass",
+			values:     []string{"vectorization", "inlining", "kernel-info", "size-info", "analysis"},
+			defaultVal: "analysis",
+		},
+		{
+			name:       "remark_status",
+			values:     []string{"passed", "missed", "analysis"},
+			defaultVal: "passed",
+		},
+	}
+
+	for _, enum := range enums {
+		// Check if type exists
+		var exists bool
+		err := d.DB.Raw(`
+            SELECT EXISTS (
+                SELECT 1 FROM pg_type t 
+                JOIN pg_namespace n ON t.typnamespace = n.oid 
+                WHERE t.typname = ? AND n.nspname = 'public'
+            )`, enum.name).Scan(&exists).Error
+		if err != nil {
+			return fmt.Errorf("failed to check enum %s: %w", enum.name, err)
+		}
+
+		if !exists {
+			sql := fmt.Sprintf(`DO $$ 
+            BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_type t 
+                    JOIN pg_namespace n ON t.typnamespace = n.oid 
+                    WHERE t.typname = '%s' AND n.nspname = 'public') 
+                THEN
+                    CREATE TYPE %s AS ENUM ('%s');
+                END IF;
+            END $$;`, enum.name, enum.name, strings.Join(enum.values, "', '"))
+
+			if err := d.DB.Exec(sql).Error; err != nil {
+				return fmt.Errorf("failed to create enum %s: %w", enum.name, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// Ensure table consistency
+func (d *Database) EnsureTables() error {
+	// Check if KernelInfo table exists
+	if !d.DB.Migrator().HasTable(&models.KernelInfo{}) {
+		if err := d.DB.AutoMigrate(&models.KernelInfo{}); err != nil {
+			return fmt.Errorf("failed to create kernel_infos table: %w", err)
+		}
+	}
+
+	// Check if MemoryAccess table exists
+	if !d.DB.Migrator().HasTable(&models.MemoryAccess{}) {
+		if err := d.DB.AutoMigrate(&models.MemoryAccess{}); err != nil {
+			return fmt.Errorf("failed to create memory_accesses table: %w", err)
+		}
+	}
+
+	return nil
 }

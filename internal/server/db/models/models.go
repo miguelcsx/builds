@@ -131,31 +131,57 @@ type Artifact struct {
 }
 
 type CompilerRemark struct {
-	ID         uint `gorm:"primarykey"`
-	BuildID    string
-	Type       string // Using string type for the enum
-	Pass       string // Using string type for the enum
-	Status     string // Using string type for the enum
+	ID         uint   `gorm:"primarykey"`
+	BuildID    string `gorm:"index"`
+	Type       string // The YAML tag type (Passed, Missed, Analysis, etc)
+	Pass       string `gorm:"type:text"`
+	Name       string `gorm:"type:text"`
 	Message    string `gorm:"type:text"`
-	Function   string
+	Function   string `gorm:"type:text"`
 	Timestamp  time.Time
 	Location   Location    `gorm:"embedded;embeddedPrefix:location_"`
-	KernelInfo *KernelInfo `gorm:"foreignKey:RemarkID"`
-	Metadata   JSON        `gorm:"type:jsonb"` // Using JSONB for metadata
+	KernelInfo *KernelInfo `gorm:"foreignKey:RemarkID;constraint:OnUpdate:CASCADE,OnDelete:SET NULL;"`
+	Args       RemarkArgs  `gorm:"type:jsonb;serializer:json"`
+	Hotness    int32       `gorm:"default:0"`
+	RawMessage string      `gorm:"type:text"`
+	Status     string      `gorm:"type:text"`
+	Metadata   JSON        `gorm:"type:jsonb"`
 }
 
+// RemarkArgs represents the structured arguments from YAML
+type RemarkArgs struct {
+	Strings     []string          `json:"strings,omitempty"`
+	Callee      string            `json:"callee,omitempty"`
+	Caller      string            `json:"caller,omitempty"`
+	Type        string            `json:"type,omitempty"`
+	Line        string            `json:"line,omitempty"`
+	Column      string            `json:"column,omitempty"`
+	Cost        string            `json:"cost,omitempty"`
+	Reason      string            `json:"reason,omitempty"`
+	DebugLoc    *Location         `json:"debug_loc,omitempty"`
+	OtherAccess *RemarkAccess     `json:"other_access,omitempty"`
+	ClobberedBy *RemarkAccess     `json:"clobbered_by,omitempty"`
+	Values      map[string]string `json:"values,omitempty"`
+}
+
+type RemarkAccess struct {
+	Type     string    `json:"type,omitempty"`
+	DebugLoc *Location `json:"debug_loc,omitempty"`
+}
+
+// Location represents source code location, now with optional fields
 type Location struct {
-	File     string
-	Line     int32
-	Column   int32
-	Function string
-	Region   string
-	Artifact bool
+	File     string `json:"file,omitempty"`
+	Line     int32  `json:"line,omitempty"`
+	Column   int32  `json:"column,omitempty"`
+	Function string `json:"function,omitempty"`
+	Region   string `json:"region,omitempty"`
 }
 
+// KernelInfo updates to better support YAML structure
 type KernelInfo struct {
 	ID                       uint `gorm:"primarykey"`
-	RemarkID                 uint
+	RemarkID                 uint `gorm:"uniqueIndex"`
 	ThreadLimit              int32
 	MaxThreadsX              int32
 	MaxThreadsY              int32
@@ -170,19 +196,31 @@ type KernelInfo struct {
 	AllocasDynamicCount      int32
 	FlatAddressSpaceAccesses int32
 	InlineAssemblyCalls      int32
+	NumStackBytes            int64
+	NumInstructions          int32
 	Metrics                  JSON           `gorm:"type:jsonb"`
 	Attributes               JSON           `gorm:"type:jsonb"`
-	MemoryAccesses           []MemoryAccess `gorm:"foreignKey:KernelInfoID"`
+	MemoryAccesses           []MemoryAccess `gorm:"foreignKey:KernelInfoID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
+	BasicBlocks              []BasicBlock   `gorm:"foreignKey:KernelInfoID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE;"`
 }
 
 type MemoryAccess struct {
-	ID            uint `gorm:"primarykey"`
-	KernelInfoID  uint
-	Type          string
-	AddressSpace  string
-	Instruction   string
-	Variable      string
-	AccessPattern string
+	ID            uint     `gorm:"primarykey"`
+	KernelInfoID  uint     `gorm:"index"`
+	Type          string   `gorm:"type:text"`
+	AddressSpace  string   `gorm:"type:text"`
+	Instruction   string   `gorm:"type:text"`
+	Variable      string   `gorm:"type:text"`
+	AccessPattern string   `gorm:"type:text"`
+	Location      Location `gorm:"embedded;embeddedPrefix:mem_loc_"`
+}
+
+type BasicBlock struct {
+	ID           uint   `gorm:"primarykey"`
+	KernelInfoID uint   `gorm:"index"`
+	Name         string `gorm:"type:text"`
+	Instructions int32
+	Location     Location `gorm:"embedded;embeddedPrefix:bb_loc_"`
 }
 
 type ResourceUsage struct {
@@ -248,4 +286,22 @@ func (j *JSON) Scan(value interface{}) error {
 	default:
 		return fmt.Errorf("unsupported type: %T", value)
 	}
+}
+
+// JSON marshaling for RemarkArgs
+func (r RemarkArgs) Value() (driver.Value, error) {
+	return json.Marshal(r)
+}
+
+func (r *RemarkArgs) Scan(value interface{}) error {
+	if value == nil {
+		return nil
+	}
+
+	b, ok := value.([]byte)
+	if !ok {
+		return fmt.Errorf("invalid scan type for RemarkArgs: %T", value)
+	}
+
+	return json.Unmarshal(b, r)
 }

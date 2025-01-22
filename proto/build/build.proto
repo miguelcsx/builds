@@ -111,30 +111,55 @@ message Artifact {
   string hash = 4;
 }
 
+enum RemarkType {
+  TYPE_UNSPECIFIED = 0;
+  OPTIMIZATION = 1;
+  KERNEL = 2;
+  ANALYSIS = 3;
+  METRIC = 4;
+  INFO = 5;
+}
+
+enum RemarkPass {
+  PASS_UNSPECIFIED = 0;
+  VECTORIZATION = 1;
+  INLINING = 2;
+  KERNEL_INFO = 3;
+  SIZE_INFO = 4;
+  PASS_ANALYSIS = 5;
+}
+
+enum RemarkStatus {
+  STATUS_UNSPECIFIED = 0;
+  PASSED = 1;
+  MISSED = 2;
+  STATUS_ANALYSIS = 3;
+}
+
 message CompilerRemark {
   enum Type {
-    TYPE_UNSPECIFIED = 0;
-    OPTIMIZATION = 1;
-    KERNEL = 2;
-    ANALYSIS = 3;
-    METRIC = 4;
-    INFO = 5;
-  }
-
-  enum Status {
-    STATUS_UNSPECIFIED = 0;
-    PASSED = 1;
-    MISSED = 2;
-    STATUS_ANALYSIS = 3;
+      TYPE_UNSPECIFIED = 0;
+      OPTIMIZATION = 1;
+      KERNEL = 2;
+      ANALYSIS = 3;
+      METRIC = 4;
+      INFO = 5;
   }
 
   enum Pass {
-    PASS_UNSPECIFIED = 0;
-    VECTORIZATION = 1;
-    INLINING = 2;
-    KERNEL_INFO = 3;
-    SIZE_INFO = 4;
-    PASS_ANALYSIS = 5;
+      PASS_UNSPECIFIED = 0;
+      VECTORIZATION = 1;
+      INLINING = 2;
+      KERNEL_INFO = 3;
+      SIZE_INFO = 4;
+      PASS_ANALYSIS = 5;
+  }
+
+  enum Status {
+      STATUS_UNSPECIFIED = 0;
+      PASSED = 1;
+      MISSED = 2;
+      STATUS_ANALYSIS = 3;
   }
 
   string id = 1;
@@ -145,8 +170,10 @@ message CompilerRemark {
   string function = 6;
   google.protobuf.Timestamp timestamp = 7;
   Location location = 8;
-  KernelInfo kernel_info = 9;
-  google.protobuf.Struct metadata = 10;
+  RemarkArgs args = 9;
+  int32 hotness = 10;
+  KernelInfo kernel_info = 11;
+  google.protobuf.Struct metadata = 12;
 }
 
 message Location {
@@ -155,7 +182,27 @@ message Location {
   int32 column = 3;
   string function = 4;
   string region = 5;
-  bool artifact = 6;
+  string artifact = 6;
+}
+
+message RemarkArgs {
+  repeated string strings = 1;
+  string callee = 2;
+  string caller = 3;
+  string type = 4;
+  string line = 5;
+  string column = 6;
+  string cost = 7;
+  string reason = 8;
+  Location debug_loc = 9;
+  RemarkAccess other_access = 10;
+  RemarkAccess clobbered_by = 11;
+  map<string, string> values = 12;
+}
+
+message RemarkAccess {
+  string type = 1;
+  Location debug_loc = 2;
 }
 
 message KernelInfo {
@@ -165,15 +212,15 @@ message KernelInfo {
   int32 max_threads_z = 4;
   int64 shared_memory = 5;
   string target = 6;
-  repeated MemoryAccess memory_accesses = 7;
-  int32 direct_calls = 8;
-  int32 indirect_calls = 9;
-  repeated string callees = 10;
-  int32 allocas_count = 11;
-  int64 allocas_static_size = 12;
-  int32 allocas_dynamic_count = 13;
-  int32 flat_address_space_accesses = 14;
-  int32 inline_assembly_calls = 15;
+  int32 direct_calls = 7;
+  int32 indirect_calls = 8;
+  repeated string callees = 9;
+  int32 allocas_count = 10;
+  int64 allocas_static_size = 11;
+  int32 allocas_dynamic_count = 12;
+  int32 flat_address_space_accesses = 13;
+  int32 inline_assembly_calls = 14;
+  repeated MemoryAccess memory_accesses = 15;
   map<string, int64> metrics = 16;
   map<string, string> attributes = 17;
 }
@@ -184,7 +231,9 @@ message MemoryAccess {
   string instruction = 3;
   string variable = 4;
   string access_pattern = 5;
+  Location location = 6;
 }
+
 
 message ResourceUsage {
   int64 max_memory = 1;

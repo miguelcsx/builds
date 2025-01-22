@@ -85,8 +85,8 @@ func (a *Analyzer) calculateWastedMemory() int64 {
 
 	// Check for large allocations in compiler remarks
 	for _, remark := range a.build.Remarks {
-		if strings.Contains(remark.Message, "alloca") {
-			// Add static allocation size to wasted memory
+		if strings.Contains(remark.Message, "alloca") && remark.KernelInfo != nil {
+			// Add static allocation size to wasted memory only if KernelInfo exists
 			wastedMemory += remark.KernelInfo.AllocasStaticSize
 		}
 	}

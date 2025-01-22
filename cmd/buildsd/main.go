@@ -147,6 +147,8 @@ func autoMigrate(gormDB *gorm.DB) error {
 		&dbmodels.Output{},
 		&dbmodels.Artifact{},
 		&dbmodels.CompilerRemark{},
+		&dbmodels.KernelInfo{},
+		&dbmodels.MemoryAccess{},
 		&dbmodels.ResourceUsage{},
 		&dbmodels.Performance{},
 		&dbmodels.PerformancePhase{},

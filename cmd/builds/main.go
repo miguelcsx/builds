@@ -4,7 +4,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -20,7 +19,6 @@ import (
 	"builds/internal/collectors/compiler"
 	"builds/internal/collectors/environment"
 	"builds/internal/collectors/hardware"
-	"builds/internal/collectors/kernel"
 	"builds/internal/collectors/remarks"
 	"builds/internal/collectors/resource"
 	"builds/internal/models"
@@ -71,7 +69,6 @@ func main() {
 	factory.RegisterCollector("environment", environment.NewCollector())
 	factory.RegisterCollector("hardware", hardware.NewCollector())
 	factory.RegisterCollector("compiler", compiler.NewCollector(buildCtx))
-	factory.RegisterCollector("kernel", kernel.NewCollector(buildCtx, os.Stderr))
 	factory.RegisterCollector("remarks", remarks.NewCollector(buildCtx))
 	factory.RegisterCollector("resource", resource.NewCollector(buildCtx))
 
@@ -244,12 +241,16 @@ func convertResourceUsage(res models.ResourceUsage) *buildv1.ResourceUsage {
 }
 
 func convertRemarks(remarks []models.CompilerRemark) []*buildv1.CompilerRemark {
+	log.Printf("Converting %d remarks to protobuf", len(remarks))
 	pbRemarks := make([]*buildv1.CompilerRemark, len(remarks))
+
 	for i, remark := range remarks {
+		log.Printf("Converting remark %d: %s", i, remark.Message)
+
 		pbRemark := &buildv1.CompilerRemark{
-			Id:       remark.ID,
-			Message:  remark.Message,
-			Function: remark.Function,
+			Message:   remark.Message,
+			Function:  remark.Function,
+			Timestamp: timestamppb.New(remark.Timestamp),
 			Location: &buildv1.Location{
 				File:     remark.Location.File,
 				Line:     remark.Location.Line,
@@ -258,43 +259,46 @@ func convertRemarks(remarks []models.CompilerRemark) []*buildv1.CompilerRemark {
 				Region:   remark.Location.Region,
 				Artifact: remark.Location.Artifact,
 			},
-			Timestamp: timestamppb.New(remark.Timestamp),
 		}
 
-		// Convert enums
-		switch remark.Type {
-		case models.RemarkTypeOptimization:
+		// Convert type
+		switch strings.ToLower(string(remark.Type)) {
+		case "optimization":
 			pbRemark.Type = buildv1.CompilerRemark_OPTIMIZATION
-		case models.RemarkTypeKernel:
+		case "kernel":
 			pbRemark.Type = buildv1.CompilerRemark_KERNEL
-		case models.RemarkTypeAnalysis:
+		case "analysis":
 			pbRemark.Type = buildv1.CompilerRemark_ANALYSIS
-		case models.RemarkTypeMetric:
+		case "metric":
 			pbRemark.Type = buildv1.CompilerRemark_METRIC
-		case models.RemarkTypeInfo:
+		default:
 			pbRemark.Type = buildv1.CompilerRemark_INFO
 		}
 
-		switch remark.Pass {
-		case models.PassTypeVectorization:
+		// Convert pass
+		switch strings.ToLower(string(remark.Pass)) {
+		case "vectorization":
 			pbRemark.Pass = buildv1.CompilerRemark_VECTORIZATION
-		case models.PassTypeInlining:
+		case "inlining":
 			pbRemark.Pass = buildv1.CompilerRemark_INLINING
-		case models.PassTypeKernelInfo:
+		case "kernel-info":
 			pbRemark.Pass = buildv1.CompilerRemark_KERNEL_INFO
-		case models.PassTypeSizeInfo:
+		case "size-info":
 			pbRemark.Pass = buildv1.CompilerRemark_SIZE_INFO
-		case models.PassTypeAnalysis:
+		default:
 			pbRemark.Pass = buildv1.CompilerRemark_PASS_ANALYSIS
 		}
 
-		switch remark.Status {
-		case models.RemarkStatusPassed:
+		// Convert status
+		switch strings.ToLower(string(remark.Status)) {
+		case "passed":
 			pbRemark.Status = buildv1.CompilerRemark_PASSED
-		case models.RemarkStatusMissed:
+		case "missed":
 			pbRemark.Status = buildv1.CompilerRemark_MISSED
-		case models.RemarkStatusAnalysis:
+		case "analysis":
 			pbRemark.Status = buildv1.CompilerRemark_STATUS_ANALYSIS
+		default:
+			pbRemark.Status = buildv1.CompilerRemark_PASSED
 		}
 
 		// Convert kernel info if present
@@ -331,18 +335,18 @@ func convertRemarks(remarks []models.CompilerRemark) []*buildv1.CompilerRemark {
 			}
 		}
 
-		// Convert metadata to structpb
+		// Convert metadata
 		if len(remark.Metadata) > 0 {
-			metadataJSON, err := json.Marshal(remark.Metadata)
+			metadata, err := structpb.NewStruct(map[string]interface{}(remark.Metadata))
 			if err == nil {
-				metadataStruct := &structpb.Struct{}
-				if err := metadataStruct.UnmarshalJSON(metadataJSON); err == nil {
-					pbRemark.Metadata = metadataStruct
-				}
+				pbRemark.Metadata = metadata
+			} else {
+				log.Printf("Warning: Failed to convert metadata for remark: %v", err)
 			}
 		}
 
 		pbRemarks[i] = pbRemark
 	}
+
 	return pbRemarks
 }
